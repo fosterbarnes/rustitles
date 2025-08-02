@@ -137,11 +137,11 @@ impl SubtitleDownloader {
             if let Some(latest) = self.get_latest_version() {
                 if Self::is_outdated(APP_VERSION, latest) {
                     let exe_url = if cfg!(target_os = "windows") {
-                        format!("https://github.com/fosterbarnes/rustitles/releases/download/{}/rustitles.exe", latest)
+                        format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest)
                     } else if cfg!(target_os = "linux") {
-                        format!("https://github.com/fosterbarnes/rustitles/releases/download/{}/rustitles.AppImage", latest)
+                        format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest)
                     } else {
-                        format!("https://github.com/fosterbarnes/rustitles/releases/download/{}/rustitles", latest)
+                        format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest)
                     };
                     let link_text = format!("-> Rustitles {}", latest);
                     let link_rich = egui::RichText::new(link_text).color(egui::Color32::from_rgb(80, 160, 255));

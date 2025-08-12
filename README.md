@@ -57,7 +57,11 @@ I've tested for Windows Defender false postives in a virtual machine, and nothin
 
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
 
-[Virustotal scan of Rustitles](https://www.virustotal.com/gui/file/cc05fb32c293f71eeb30d898000add1a51e5e1a9d2c5fa94b119bba32c1fecf2?nocache=1)
+VirusTotal scans:
+- [rustitles v2.1.1.exe](https://www.virustotal.com/gui/file/5e0d3f7fb5291be9c23134c0296e4152542b062c099179807058dd8b2c863e27?nocache=1)
+- [rustitles v2.1.1.AppImage](https://www.virustotal.com/gui/file/91c1b5987fec12c77445772f604e960ccffacabb015668a7fbdd2362ef055da7?nocache=1)
+
+Any detections seen can be assumed as false positives due to the app checking for and installing python if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub. 
 
 ## Building/Compiling
 
@@ -79,3 +83,6 @@ If you have any issues, create an issue from the [Issues](https://github.com/fos
 
 If you'd like to support me, follow me on twitch:
 https://www.twitch.tv/fosterbarnes
+
+or if you're feeling generous drop a donation:
+https://coff.ee/fosterbarnes

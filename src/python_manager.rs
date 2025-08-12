@@ -357,11 +357,49 @@ impl PythonManager {
         Ok(status.success())
     }
 
-    /// Ensure Subliminal cache directory exists
+    /// Ensure Subliminal cache directory exists with proper permissions
     pub fn ensure_cache_dir() -> io::Result<PathBuf> {
         let cache_dir = env::temp_dir().join("subliminal_cache");
-        std::fs::create_dir_all(&cache_dir)?;
+        
+        // Create the directory if it doesn't exist
+        if !cache_dir.exists() {
+            std::fs::create_dir_all(&cache_dir)?;
+        }
+        
+        // On Windows, try to set proper permissions and clean up any corrupted cache files
+        #[cfg(windows)]
+        {
+            // Clean up any existing DBM cache files that might be corrupted
+            let cache_files = ["cache.dbm", "cache.dir", "cache.pag", "cache.db"];
+            for file_name in &cache_files {
+                let cache_file = cache_dir.join(file_name);
+                if cache_file.exists() {
+                    // Try to remove corrupted cache files
+                    let _ = std::fs::remove_file(&cache_file);
+                }
+            }
+        }
+        
         Ok(cache_dir)
+    }
+
+    /// Clean up corrupted cache files (call this when DBM errors persist)
+    pub fn cleanup_cache() -> io::Result<()> {
+        let cache_dir = env::temp_dir().join("subliminal_cache");
+        if cache_dir.exists() {
+            // Remove all cache files to force a fresh start
+            let cache_files = ["cache.dbm", "cache.dir", "cache.pag", "cache.db", "cache"];
+            for file_name in &cache_files {
+                let cache_file = cache_dir.join(file_name);
+                if cache_file.exists() {
+                    let _ = std::fs::remove_file(&cache_file);
+                }
+            }
+            // Also try to remove the directory and recreate it
+            let _ = std::fs::remove_dir_all(&cache_dir);
+            std::fs::create_dir_all(&cache_dir)?;
+        }
+        Ok(())
     }
 
     /// Run a command with hidden console window

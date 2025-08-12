@@ -58,13 +58,27 @@ impl SubtitleUtils {
     /// Convert a language code to a human-readable name
     pub fn language_code_to_name(code: &str) -> &str {
         match code {
+            // Regional Variants (high priority)
             "en" => "English",
+            "en-us" => "English (US)",
+            "en-gb" => "English (UK)",
             "fr" => "French",
+            "fr-ca" => "French (Canada)",
             "es" => "Spanish",
+            "es-mx" => "Spanish (Mexico)",
+            "es-es" => "Spanish (Spain)",
             "de" => "German",
+            "de-at" => "German (Austria)",
+            "de-ch" => "German (Switzerland)",
             "it" => "Italian",
+            "it-ch" => "Italian (Switzerland)",
             "pt" => "Portuguese",
+            "pt-br" => "Portuguese (Brazil)",
+            "pt-pt" => "Portuguese (Portugal)",
             "nl" => "Dutch",
+            "nl-be" => "Dutch (Belgium)",
+            
+            // Additional European Languages
             "pl" => "Polish",
             "ru" => "Russian",
             "sv" => "Swedish",
@@ -74,6 +88,20 @@ impl SubtitleUtils {
             "cs" => "Czech",
             "hu" => "Hungarian",
             "ro" => "Romanian",
+            "bg" => "Bulgarian",
+            "hr" => "Croatian",
+            "et" => "Estonian",
+            "el" => "Greek",
+            "is" => "Icelandic",
+            "lv" => "Latvian",
+            "lt" => "Lithuanian",
+            "mt" => "Maltese",
+            "sk" => "Slovak",
+            "sl" => "Slovenian",
+            "tr" => "Turkish",
+            "uk" => "Ukrainian",
+            
+            // Additional Asian Languages
             "he" => "Hebrew",
             "ar" => "Arabic",
             "ja" => "Japanese",
@@ -81,6 +109,43 @@ impl SubtitleUtils {
             "zh" => "Chinese",
             "zh-cn" => "Chinese (Simplified)",
             "zh-tw" => "Chinese (Traditional)",
+            "th" => "Thai",
+            "vi" => "Vietnamese",
+            "id" => "Indonesian",
+            "ms" => "Malay",
+            "fil" => "Filipino/Tagalog",
+            "bn" => "Bengali",
+            "hi" => "Hindi",
+            "ur" => "Urdu",
+            "fa" => "Persian/Farsi",
+            
+            // Additional African Languages
+            "af" => "Afrikaans",
+            "sw" => "Swahili",
+            "zu" => "Zulu",
+            "xh" => "Xhosa",
+            
+            // Additional Middle Eastern Languages
+            "ku" => "Kurdish",
+            "az" => "Azerbaijani",
+            "ka" => "Georgian",
+            "am" => "Amharic",
+            
+            // Additional Indian Subcontinent Languages
+            "ta" => "Tamil",
+            "te" => "Telugu",
+            "kn" => "Kannada",
+            "ml" => "Malayalam",
+            "gu" => "Gujarati",
+            "pa" => "Punjabi",
+            "or" => "Odia",
+            
+            // Additional East Asian Languages
+            "mn" => "Mongolian",
+            "my" => "Burmese",
+            "lo" => "Lao",
+            "km" => "Khmer",
+            
             _ => code,
         }
     }

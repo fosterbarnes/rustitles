@@ -168,12 +168,29 @@ impl SubtitleDownloader {
     /// Render language selection interface
     pub fn render_language_selection(&mut self, ui: &mut egui::Ui) {
         let language_list = vec![
-            ("en", "English"), ("fr", "French"), ("es", "Spanish"), ("de", "German"),
-            ("it", "Italian"), ("pt", "Portuguese"), ("nl", "Dutch"), ("pl", "Polish"),
-            ("ru", "Russian"), ("sv", "Swedish"), ("fi", "Finnish"), ("da", "Danish"),
-            ("no", "Norwegian"), ("cs", "Czech"), ("hu", "Hungarian"), ("ro", "Romanian"),
-            ("he", "Hebrew"), ("ar", "Arabic"), ("ja", "Japanese"), ("ko", "Korean"),
-            ("zh", "Chinese"), ("zh-cn", "Chinese (Simplified)"), ("zh-tw", "Chinese (Traditional)")
+            // English and variants at the top
+            ("en", "English"), ("en-gb", "English (UK)"), ("en-us", "English (US)"),
+            
+            // All other languages sorted alphabetically
+            ("af", "Afrikaans"), ("am", "Amharic"), ("ar", "Arabic"), ("az", "Azerbaijani"),
+            ("bg", "Bulgarian"), ("bn", "Bengali"), ("cs", "Czech"), ("da", "Danish"),
+            ("de", "German"), ("de-at", "German (Austria)"), ("de-ch", "German (Switzerland)"),
+            ("el", "Greek"), ("es", "Spanish"), ("es-es", "Spanish (Spain)"), ("es-mx", "Spanish (Mexico)"),
+            ("et", "Estonian"), ("fa", "Persian/Farsi"), ("fi", "Finnish"), ("fil", "Filipino/Tagalog"),
+            ("fr", "French"), ("fr-ca", "French (Canada)"), ("gu", "Gujarati"), ("he", "Hebrew"),
+            ("hi", "Hindi"), ("hr", "Croatian"), ("hu", "Hungarian"), ("id", "Indonesian"),
+            ("is", "Icelandic"), ("it", "Italian"), ("it-ch", "Italian (Switzerland)"), ("ja", "Japanese"),
+            ("ka", "Georgian"), ("km", "Khmer"), ("kn", "Kannada"), ("ko", "Korean"),
+            ("ku", "Kurdish"), ("lo", "Lao"), ("lt", "Lithuanian"), ("lv", "Latvian"),
+            ("ml", "Malayalam"), ("mn", "Mongolian"), ("ms", "Malay"), ("mt", "Maltese"),
+            ("my", "Burmese"), ("nl", "Dutch"), ("nl-be", "Dutch (Belgium)"), ("no", "Norwegian"),
+            ("or", "Odia"), ("pa", "Punjabi"), ("pl", "Polish"), ("pt", "Portuguese"),
+            ("pt-br", "Portuguese (Brazil)"), ("pt-pt", "Portuguese (Portugal)"), ("ro", "Romanian"),
+            ("ru", "Russian"), ("sk", "Slovak"), ("sl", "Slovenian"), ("sv", "Swedish"),
+            ("sw", "Swahili"), ("ta", "Tamil"), ("te", "Telugu"), ("th", "Thai"),
+            ("tr", "Turkish"), ("uk", "Ukrainian"), ("ur", "Urdu"), ("vi", "Vietnamese"),
+            ("xh", "Xhosa"), ("zh", "Chinese"), ("zh-cn", "Chinese (Simplified)"), ("zh-tw", "Chinese (Traditional)"),
+            ("zu", "Zulu")
         ];
 
         ui.horizontal(|ui| {
@@ -226,7 +243,8 @@ impl SubtitleDownloader {
                         for (code, name) in &language_list {
                             let selected_languages = self.get_selected_languages_mut();
                             let mut selected = selected_languages.contains(&code.to_string());
-                            if ui.checkbox(&mut selected, *name).changed() {
+                            let display_text = format!("{} [{}]", name, code);
+                            if ui.checkbox(&mut selected, display_text).changed() {
                                 if selected {
                                     selected_languages.push(code.to_string());
                                     debug!("Language selected: {}", code);

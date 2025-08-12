@@ -390,6 +390,13 @@ impl SubtitleDownloader {
                         env_vars.insert("SUBLIMINAL_CACHE_DIR".to_string(), cache_dir.to_string_lossy().to_string());
                         env_vars.insert("PYTHONHASHSEED".to_string(), "0".to_string());
                         
+                        // Additional environment variables to help with Windows DBM cache issues
+                        #[cfg(windows)]
+                        {
+                            env_vars.insert("SUBLIMINAL_CACHE_BACKEND".to_string(), "memory".to_string());
+                            env_vars.insert("PYTHONPATH".to_string(), std::env::var("PYTHONPATH").unwrap_or_default());
+                        }
+                        
                         // Build command arguments with multiple -l flags for each language
                         let mut args = vec!["download"];
                         if force_download {
@@ -482,9 +489,22 @@ impl SubtitleDownloader {
                                         job.status = JobStatus::Failed("No subtitles found online".to_string());
                                     }
                                 } else if combined_output.contains("error") || combined_output.contains("failed") {
-                                    if !subtitle_paths.is_empty() {
+                                    // Check if this is a DBM cache error (which is often recoverable)
+                                    if combined_output.contains("dbm.error") || combined_output.contains("db type could not be determined") {
+                                        if !subtitle_paths.is_empty() {
+                                            // If subtitles were downloaded despite cache error, mark as success
+                                            job.status = JobStatus::Success;
+                                            warn!("DBM cache error occurred but subtitles were downloaded successfully for {}", job_path.display());
+                                        } else {
+                                            // Cache error with no subtitles - this might be recoverable
+                                            job.status = JobStatus::Failed("DBM cache error - try again later".to_string());
+                                            warn!("DBM cache error for {} - this is often recoverable", job_path.display());
+                                        }
+                                    } else if !subtitle_paths.is_empty() {
+                                        // Other error but subtitles were downloaded
                                         job.status = JobStatus::Success;
                                     } else {
+                                        // Other error with no subtitles
                                         job.status = JobStatus::Failed("Subliminal error: see log".to_string());
                                     }
                                 } else {

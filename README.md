@@ -8,11 +8,11 @@ Rustitles will scan a given folder and automatically download subtitles in the s
 
 ### Windows
 - Download and install the latest version of [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.1/rustitles.exe) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.2/rustitles.exe) of Rustitles
 - Save rustitles.exe somewhere memorable, or just run it from your downloads folder.
 
 ### Linux
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.1/rustitles.AppImage) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.2/rustitles.AppImage) of Rustitles
 - Save rustitles.AppImage somewhere memorable, or just run it from your downloads folder.
 - Make it executable. Example: `chmod +x rustitles.AppImage`
 
@@ -58,8 +58,8 @@ I've tested for Windows Defender false postives in a virtual machine, and nothin
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
 
 VirusTotal scans:
-- [rustitles v2.1.1.exe](https://www.virustotal.com/gui/file/5e0d3f7fb5291be9c23134c0296e4152542b062c099179807058dd8b2c863e27?nocache=1)
-- [rustitles v2.1.1.AppImage](https://www.virustotal.com/gui/file/91c1b5987fec12c77445772f604e960ccffacabb015668a7fbdd2362ef055da7?nocache=1)
+- [rustitles v2.1.2.exe](https://www.virustotal.com/gui/file-analysis/NzVmOWUxNjMyNzYxMDY4ZWNhMzI1MDM4MmZhMDgzN2Q6MTc1NTA0ODY0NQ==)
+- [rustitles v2.1.2.AppImage](https://www.virustotal.com/gui/file/1ab1ccd430a33c43d5e6c1fde45d64187356484c61ec300717bae7f40b8c4550?nocache=1)
 
 Any detections seen can be assumed as false positives due to the app checking for and installing python if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub. 
 

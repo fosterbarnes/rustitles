@@ -228,6 +228,22 @@ impl SubtitleDownloader {
                     self.scan_folder();
                 }
             }
+            
+            let ignore_local_extras = self.get_ignore_local_extras_mut();
+            let ignore_extras_checkbox_response = ui.checkbox(ignore_local_extras, "Ignore Extra Folders for Plex")
+                .on_hover_ui(|ui| {
+                    ui.set_width(300.0);
+                    ui.label("Ignores 'Behind The Scenes', 'Deleted Scenes', 'Featurettes', 'Interviews', 'Scenes', 'Shorts', 'Trailers' and 'Other' folders");
+                });
+            if ignore_extras_checkbox_response.changed() {
+                info!("(Ignore Local Extras) changed to: {}", *ignore_local_extras);
+                self.set_keep_dropdown_open(false); // Close dropdown when checkbox is clicked
+                self.save_current_settings(); // Save settings when changed
+                // Re-scan for missing subtitles when ignore extras option changes
+                if !self.get_folder_path().is_empty() {
+                    self.scan_folder();
+                }
+            }
         });
         
         // Simple popup that shows when button is clicked
@@ -336,6 +352,14 @@ impl SubtitleDownloader {
                     ui.label(format!("Overwriting {} subtitles", missing_count));
                 } else {
                     ui.label(format!("Missing subtitles: {}", missing_count));
+                }
+                
+                // Show ignored extra folders count if the feature is enabled and folders were ignored
+                if self.get_ignore_local_extras() && self.get_ignored_extra_folders() > 0 {
+                    ui.add_space(5.0);
+                    ui.label("-");
+                    ui.add_space(5.0);
+                    ui.label(format!("Ignoring {} extra folders", self.get_ignored_extra_folders()));
                 }
             });
         }
@@ -613,10 +637,16 @@ impl eframe::App for SubtitleDownloader {
         // When scan finishes, start downloads automatically
         if self.scanning {
             if let Some(rx) = &self.scan_done_receiver {
-                if rx.try_recv().is_ok() {
+                if let Ok(ignored_count) = rx.try_recv() {
                     self.scanning = false;
                     self.status = "Scan completed.".to_string();
                     self.scan_done_receiver = None;
+                    
+                    // Update the ignored extra folders count
+                    self.ignored_extra_folders = ignored_count;
+                    if ignored_count > 0 {
+                        info!("Scan completed with {} extra folders ignored", ignored_count);
+                    }
 
                     // Start downloads automatically after scan
                     info!("Scan completed, starting downloads automatically");

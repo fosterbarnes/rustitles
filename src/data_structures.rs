@@ -56,6 +56,7 @@ pub struct SubtitleDownloader {
     pub force_download: bool,
     pub overwrite_existing: bool,
     pub concurrent_downloads: usize,
+    pub ignore_local_extras: bool,
     pub keep_dropdown_open: bool,
 
     // Folder and scan state
@@ -63,7 +64,8 @@ pub struct SubtitleDownloader {
     pub scanned_videos: SharedPaths,
     pub videos_missing_subs: SharedPaths,
     pub scanning: bool,
-    pub scan_done_receiver: Option<std::sync::mpsc::Receiver<()>>,
+    pub scan_done_receiver: Option<std::sync::mpsc::Receiver<usize>>,
+    pub ignored_extra_folders: usize,
 
     // UI status
     pub status: String,

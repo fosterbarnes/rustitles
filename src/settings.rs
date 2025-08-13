@@ -14,6 +14,7 @@ pub struct Settings {
     pub force_download: bool,
     pub overwrite_existing: bool,
     pub concurrent_downloads: usize,
+    pub ignore_local_extras: bool,
 }
 
 impl Default for Settings {
@@ -23,6 +24,7 @@ impl Default for Settings {
             force_download: false,
             overwrite_existing: false,
             concurrent_downloads: DEFAULT_CONCURRENT_DOWNLOADS,
+            ignore_local_extras: false,
         }
     }
 }

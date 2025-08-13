@@ -29,8 +29,8 @@ impl Default for SubtitleDownloader {
         info!("Initializing SubtitleDownloader");
         // Load saved settings
         let settings = Settings::load();
-        info!("Loaded settings: languages={:?}, force={}, overwrite={}, concurrent={}", 
-              settings.selected_languages, settings.force_download, settings.overwrite_existing, settings.concurrent_downloads);
+        info!("Loaded settings: languages={:?}, force={}, overwrite={}, ignore_extras={}, concurrent={}", 
+              settings.selected_languages, settings.force_download, settings.overwrite_existing, settings.ignore_local_extras, settings.concurrent_downloads);
         let python_version = PythonManager::get_version();
         let python_installed = python_version.is_some();
         #[cfg(not(windows))]
@@ -150,6 +150,7 @@ impl Default for SubtitleDownloader {
             selected_languages: settings.selected_languages,
             force_download: settings.force_download,
             overwrite_existing: settings.overwrite_existing,
+            ignore_local_extras: settings.ignore_local_extras,
             concurrent_downloads: settings.concurrent_downloads,
             keep_dropdown_open: false,
             folder_path: String::new(),
@@ -157,6 +158,7 @@ impl Default for SubtitleDownloader {
             videos_missing_subs: Arc::new(Mutex::new(Vec::new())),
             scanning: false,
             scan_done_receiver: None,
+            ignored_extra_folders: 0,
             status: if python_installed && pipx_installed && !subliminal_installed {
                 "Python and pipx detected. Installing Subliminal...".to_string()
             } else {
@@ -215,6 +217,7 @@ impl SubtitleDownloader {
             selected_languages: self.selected_languages.clone(),
             force_download: self.force_download,
             overwrite_existing: self.overwrite_existing,
+            ignore_local_extras: self.ignore_local_extras,
             concurrent_downloads: self.concurrent_downloads,
         };
         
@@ -232,6 +235,9 @@ impl SubtitleDownloader {
         }
 
         info!("Starting folder scan: {}", self.folder_path);
+        if self.ignore_local_extras {
+            info!("Ignore Local Extras is enabled - will skip local extras folders during scan");
+        }
         self.status = "Scanning...".to_string();
         self.scanning = true;
         let (tx, rx) = mpsc::channel();
@@ -242,6 +248,8 @@ impl SubtitleDownloader {
         let folder_path = self.folder_path.clone();
         let selected_languages = self.selected_languages.clone();
         let overwrite_existing = self.overwrite_existing;
+        let ignore_local_extras = self.ignore_local_extras;
+        let ignored_folders_count = Arc::new(Mutex::new(0));
 
         // Clear download jobs when folder changes
         {
@@ -252,17 +260,35 @@ impl SubtitleDownloader {
 
         // Reset downloading flag when starting new scan
         self.downloading = false;
+        self.ignored_extra_folders = 0; // Reset ignored folders count
 
+        let ignored_folders_count_clone = Arc::clone(&ignored_folders_count);
         thread::spawn(move || {
             let mut found_videos = Vec::new();
             let mut missing_subtitles = Vec::new();
 
-            fn visit_dirs(dir: &Path, videos: &mut Vec<PathBuf>) {
+            fn visit_dirs(dir: &Path, videos: &mut Vec<PathBuf>, ignore_extras: bool, ignored_count: &Arc<Mutex<usize>>) {
                 if let Ok(entries) = dir.read_dir() {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_dir() {
-                            visit_dirs(&path, videos);
+                            // Check if this is a local extras folder that should be ignored
+                            if ignore_extras {
+                                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                                    let extras_folders = [
+                                        "Behind The Scenes", "Deleted Scenes", "Featurettes",
+                                        "Interviews", "Scenes", "Shorts", "Trailers", "Other"
+                                    ];
+                                    if extras_folders.contains(&dir_name) {
+                                        info!("Ignoring local extras folder: {}", path.display());
+                                        if let Ok(mut count) = ignored_count.lock() {
+                                            *count += 1;
+                                        }
+                                        continue; // Skip this folder and its contents
+                                    }
+                                }
+                            }
+                            visit_dirs(&path, videos, ignore_extras, ignored_count);
                         } else if Utils::is_video_file(&path) {
                             videos.push(path);
                         }
@@ -270,7 +296,7 @@ impl SubtitleDownloader {
                 }
             }
 
-            visit_dirs(Path::new(&folder_path), &mut found_videos);
+            visit_dirs(Path::new(&folder_path), &mut found_videos, ignore_local_extras, &ignored_folders_count_clone);
 
             if overwrite_existing {
                 // If overwrite is enabled, include all videos regardless of existing subtitles
@@ -286,11 +312,25 @@ impl SubtitleDownloader {
                 info!("Found {} videos, {} missing subtitles", found_videos.len(), missing_subtitles.len());
             }
 
+            let found_count = found_videos.len();
+            let missing_count = missing_subtitles.len();
+            
             *scanned_videos.lock().unwrap() = found_videos;
             *videos_missing_subs.lock().unwrap() = missing_subtitles;
 
-            info!("Folder scan completed");
-            let _ = tx.send(());
+            if ignore_local_extras {
+                info!("Folder scan completed with local extras ignored - found {} videos, {} missing subtitles", found_count, missing_count);
+            } else {
+                info!("Folder scan completed - found {} videos, {} missing subtitles", found_count, missing_count);
+            }
+            
+            // Send the ignored folders count along with the completion signal
+            let ignored_count = if let Ok(count) = ignored_folders_count_clone.lock() {
+                *count
+            } else {
+                0
+            };
+            let _ = tx.send(ignored_count);
         });
     }
 
@@ -812,8 +852,11 @@ impl SubtitleDownloader {
     pub fn get_force_download_mut(&mut self) -> &mut bool { &mut self.force_download }
     pub fn get_overwrite_existing(&self) -> bool { self.overwrite_existing }
     pub fn get_overwrite_existing_mut(&mut self) -> &mut bool { &mut self.overwrite_existing }
+    pub fn get_ignore_local_extras(&self) -> bool { self.ignore_local_extras }
+    pub fn get_ignore_local_extras_mut(&mut self) -> &mut bool { &mut self.ignore_local_extras }
+    pub fn get_ignored_extra_folders(&self) -> usize { self.ignored_extra_folders }
     pub fn get_concurrent_downloads_mut(&mut self) -> &mut usize { &mut self.concurrent_downloads }
-    pub fn get_scan_done_receiver_mut(&mut self) -> &mut Option<Receiver<()>> { &mut self.scan_done_receiver }
+    pub fn get_scan_done_receiver_mut(&mut self) -> &mut Option<Receiver<usize>> { &mut self.scan_done_receiver }
     pub fn get_background_check_sender(&self) -> Option<&mpsc::Sender<(bool, bool)>> { self.background_check_sender.as_ref() }
     pub fn get_background_check_handle_mut(&mut self) -> &mut Option<thread::JoinHandle<()>> { &mut self.background_check_handle }
 

@@ -2,17 +2,17 @@
 
 Rustitles will scan a given folder and automatically download subtitles in the selected language(s). It will scan recursively in the given folder for all video files, if missing subtitles are found, it will download them. This is built with media servers in mind, so if you have a large library of movies/tv-shows, just select the root folder used for your media server and wait for it to complete. This is a portable cross-platform application.
 
-![rustitles_v2 1 0](https://github.com/user-attachments/assets/cfc38aa6-3dda-482b-b6cd-c726358451d2)
+![rustitles_v2.1.2](https://i.postimg.cc/XvdsfrDg/rustitles-2.png)
 
 ## How to install
 
 ### Windows
 - Download and install the latest version of [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.1/rustitles.exe) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.2/rustitles.exe) of Rustitles
 - Save rustitles.exe somewhere memorable, or just run it from your downloads folder.
 
 ### Linux
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.1/rustitles.AppImage) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.2/rustitles.AppImage) of Rustitles
 - Save rustitles.AppImage somewhere memorable, or just run it from your downloads folder.
 - Make it executable. Example: `chmod +x rustitles.AppImage`
 
@@ -24,6 +24,11 @@ Rustitles will scan a given folder and automatically download subtitles in the s
 - Set your maximum concurrent downloads or leave this number as default. This is the amount of subtitles that will be downloaded at the same time. (More concurrent downloads = more Python processes = more RAM used)
 - Select the folder with your movies/tv-shows that you want subtitles for
 - Wait for the processes to complete
+
+### Virtual Machines
+
+- Certain OpenGL calls can cause issues in Windows VMs. Mesa 3d (an open source implementation of OpenGL) can be used to fix this issue on certain VMs, this fix works for me in VirtualBox. Just download [mesa3d-25.2.1-release-mingw.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-mingw.7z) or [mesa3d-25.2.1-release-msvc.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-msvc.7z) from <https://github.com/pal1000/mesa-dist-win/releases> unzip, and then run `systemwidedeploy.cmd` as admin, selecting "1. Core desktop OpenGL drivers".
+
 
 ## Why does this exist?
 
@@ -58,8 +63,8 @@ I've tested for Windows Defender false postives in a virtual machine, and nothin
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
 
 VirusTotal scans:
-- [rustitles v2.1.1.exe](https://www.virustotal.com/gui/file/5e0d3f7fb5291be9c23134c0296e4152542b062c099179807058dd8b2c863e27?nocache=1)
-- [rustitles v2.1.1.AppImage](https://www.virustotal.com/gui/file/91c1b5987fec12c77445772f604e960ccffacabb015668a7fbdd2362ef055da7?nocache=1)
+- [rustitles v2.1.2.exe](https://www.virustotal.com/gui/file-analysis/NzVmOWUxNjMyNzYxMDY4ZWNhMzI1MDM4MmZhMDgzN2Q6MTc1NTA0ODY0NQ==)
+- [rustitles v2.1.2.AppImage](https://www.virustotal.com/gui/file/1ab1ccd430a33c43d5e6c1fde45d64187356484c61ec300717bae7f40b8c4550?nocache=1)
 
 Any detections seen can be assumed as false positives due to the app checking for and installing python if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub. 
 

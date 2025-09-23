@@ -72,6 +72,11 @@ impl Default for SubtitleDownloader {
         let tx_clone = tx.clone();
         let background_handle = thread::spawn(move || {
             loop {
+                // Check if main thread is still alive before doing expensive operations
+                if tx_clone.send((false, false)).is_err() {
+                    return; // Main thread has closed, exit immediately
+                }
+                
                 #[cfg(windows)]
                 {
                     // On Windows, just check subliminal directly
@@ -106,8 +111,14 @@ impl Default for SubtitleDownloader {
                     }
                 }
                 
-                // Sleep for 5 seconds before next check
-                thread::sleep(std::time::Duration::from_secs(5));
+                // Use a shorter sleep with multiple checks to be more responsive to shutdown
+                for _ in 0..50 { // 50 * 100ms = 5 seconds total
+                    thread::sleep(std::time::Duration::from_millis(100));
+                    // Check if main thread is still alive by trying to send a ping
+                    if tx_clone.send((false, false)).is_err() {
+                        return; // Main thread has closed, exit immediately
+                    }
+                }
             }
         });
         info!("Python installed: {}, version: {:?}", python_installed, python_version);
@@ -645,7 +656,10 @@ impl SubtitleDownloader {
         let mut last_status = None;
         if let Some(receiver) = &self.background_check_receiver {
             while let Ok(status) = receiver.try_recv() {
-                last_status = Some(status);
+                // Ignore ping messages (false, false) - they're just for shutdown detection
+                if status != (false, false) {
+                    last_status = Some(status);
+                }
             }
         }
         if let Some((_pipx_available, subliminal_installed)) = last_status {
@@ -742,7 +756,7 @@ impl SubtitleDownloader {
                         }
                         self.python_version = PythonManager::get_version();
                         self.python_installed = self.python_version.is_some();
-                        self.status = "✅ Python installed successfully. Installing Subliminal...".to_string();
+                        self.status = "  Python installed successfully. Installing Subliminal...".to_string();
                         self.subliminal_installed = PythonManager::is_subliminal_installed();
 
                         // Start installing subliminal automatically
@@ -867,7 +881,7 @@ impl SubtitleDownloader {
             return; // Already installing
         }
         self.installing_python = true;
-        self.status = "  Installing Python...".to_string();
+        self.status = "  Installing Python... Check your taskbar for a UAC prompt (shield icon)".to_string();
         let result_ptr = self.python_install_result.clone();
         std::thread::spawn(move || {
             let result = (|| {

@@ -8,11 +8,11 @@ Rustitles will scan a given folder and automatically download subtitles in the s
 
 ### Windows
 - Download and install the latest version of [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.2/rustitles.exe) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.3/rustitles.v2.1.3.exe) of Rustitles
 - Save rustitles.exe somewhere memorable, or just run it from your downloads folder.
 
 ### Linux
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.2/rustitles.AppImage) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.1.3/rustitles.v2.1.3.AppImage) of Rustitles
 - Save rustitles.AppImage somewhere memorable, or just run it from your downloads folder.
 - Make it executable. Example: `chmod +x rustitles.AppImage`
 
@@ -63,8 +63,8 @@ I've tested for Windows Defender false postives in a virtual machine, and nothin
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
 
 VirusTotal scans:
-- [rustitles v2.1.2.exe](https://www.virustotal.com/gui/file-analysis/NzVmOWUxNjMyNzYxMDY4ZWNhMzI1MDM4MmZhMDgzN2Q6MTc1NTA0ODY0NQ==)
-- [rustitles v2.1.2.AppImage](https://www.virustotal.com/gui/file/1ab1ccd430a33c43d5e6c1fde45d64187356484c61ec300717bae7f40b8c4550?nocache=1)
+- [rustitles v2.1.3.exe](https://www.virustotal.com/gui/file/edd2a5b9a994dae4151deee657ba1c9a36df796e647cf02a38da3475adac2e90)
+- [rustitles v2.1.3.AppImage](https://www.virustotal.com/gui/file/626928dd4540bf912b560a601c367d86dba1c48c422b47b5abb5c781b99b7c5f)
 
 Any detections seen can be assumed as false positives due to the app checking for and installing python if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub. 
 

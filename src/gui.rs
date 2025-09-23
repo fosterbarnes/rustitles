@@ -14,8 +14,38 @@ use crate::{
 impl SubtitleDownloader {
     /// Render the application header
     pub fn render_header(&self, ui: &mut egui::Ui) {
-        let title = format!("Rustitles v{} - Subtitle Downloader Tool ", APP_VERSION);
-        ui.heading(egui::RichText::new(title).color(egui::Color32::from_rgb(189, 147, 249)));
+        ui.horizontal(|ui| {
+            // Title on the left as a clickable link
+            let title = format!("Rustitles v{} - Subtitle Downloader Tool", APP_VERSION);
+            let github_url = "https://github.com/fosterbarnes/rustitles";
+            let title_response = ui.hyperlink_to(
+                egui::RichText::new(title).color(egui::Color32::from_rgb(189, 147, 249)).heading(),
+                github_url
+            );
+            
+            // Set cursor icon on hover
+            if title_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            
+            // Add space to push donation link to the right
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Only show donation link when both Python and Subliminal are installed
+                if self.is_python_installed() && self.is_subliminal_installed() {
+                    let donation_url = "https://buymeacoffee.com/fosterbarnes";
+                    let donation_text = "buymeacoffee.com/fosterbarnes";
+                    let link_response = ui.hyperlink_to(
+                        egui::RichText::new(donation_text).color(egui::Color32::from_hex("#54b2fa").unwrap()),
+                        donation_url
+                    );
+                    
+                    // Set cursor icon on hover
+                    if link_response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
+            });
+        });
         ui.add_space(5.0);
     }
 
@@ -681,10 +711,28 @@ impl eframe::App for SubtitleDownloader {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Clean up background thread
         if let Some(sender) = &self.background_check_sender {
-            let _ = sender.send((false, false)); // Send dummy data to wake up thread
+            let _ = sender.send((false, false)); // Send shutdown signal to wake up thread
         }
+        
+        // Give the background thread a moment to exit gracefully
         if let Some(handle) = self.background_check_handle.take() {
-            let _ = handle.join();
+            // Use a timeout mechanism to avoid hanging indefinitely
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handle_clone = handle;
+            std::thread::spawn(move || {
+                let _ = handle_clone.join();
+                let _ = tx.send(());
+            });
+            
+            // Wait up to 2 seconds for the thread to finish
+            match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(_) => {
+                    info!("Background thread exited gracefully");
+                }
+                Err(_) => {
+                    warn!("Background thread did not exit within timeout, continuing with shutdown");
+                }
+            }
         }
         
         info!("Application closed by user");

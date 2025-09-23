@@ -4,7 +4,7 @@
 //! supported file formats, download limits, and UI settings.
 
 /// The current application version (keep in sync with Cargo.toml)
-pub const APP_VERSION: &str = "2.1.2";
+pub const APP_VERSION: &str = "2.1.3";
 
 /// Supported video file extensions for subtitle scanning
 pub static VIDEO_EXTENSIONS: &[&str] = &[

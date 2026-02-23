@@ -94,52 +94,55 @@ fn load_app_icon() -> Option<egui::IconData> {
     }
 }
 
-/// Calculate window position to center on the currently used monitor
+/// Calculate window position to center on the currently used monitor (Windows only)
+#[cfg(windows)]
 fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
-    #[cfg(windows)]
-    {
-        unsafe {
-            let mut point = POINT { x: 0, y: 0 };
-            if GetCursorPos(&mut point).is_ok() {
-                let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
-                let mut info = MONITORINFO {
-                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                    ..Default::default()
-                };
-                if GetMonitorInfoW(monitor, &mut info).as_bool() {
-                    let work_left = info.rcWork.left;
-                    let work_top = info.rcWork.top;
-                    let work_width = (info.rcWork.right - info.rcWork.left) as f32;
-                    let work_height = (info.rcWork.bottom - info.rcWork.top) as f32;
-                    let x = work_left as f32 + (work_width - window_size[0]) / 2.0;
-                    let y = work_top as f32 + (work_height - window_size[1]) / 2.0;
-                    egui::Pos2::new(x, y)
-                } else {
-                    egui::Pos2::new(100.0, 100.0)
-                }
+    unsafe {
+        let mut point = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut point).is_ok() {
+            let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let work_left = info.rcWork.left;
+                let work_top = info.rcWork.top;
+                let work_width = (info.rcWork.right - info.rcWork.left) as f32;
+                let work_height = (info.rcWork.bottom - info.rcWork.top) as f32;
+                let x = work_left as f32 + (work_width - window_size[0]) / 2.0;
+                let y = work_top as f32 + (work_height - window_size[1]) / 2.0;
+                egui::Pos2::new(x, y)
             } else {
                 egui::Pos2::new(100.0, 100.0)
             }
+        } else {
+            egui::Pos2::new(100.0, 100.0)
         }
-    }
-    
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        egui::Pos2::new(100.0, 100.0)
     }
 }
 
 /// Configure the application window and visuals
 fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions {
     let window_size = WINDOW_SIZE;
-    let center_pos = calculate_window_position(window_size);
 
-    let mut viewport_builder = egui::ViewportBuilder::default()
+    #[cfg(windows)]
+    let viewport_base = {
+        let center_pos = calculate_window_position(window_size);
+        egui::ViewportBuilder::default()
+            .with_inner_size(window_size)
+            .with_position(center_pos)
+    };
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let viewport_base = egui::ViewportBuilder::default()
         .with_inner_size(window_size)
-        .with_position(center_pos)
+        .with_centered();
+
+    let mut viewport_builder = viewport_base
         .with_decorations(true)
         .with_resizable(true)
-        .with_min_inner_size(MIN_WINDOW_SIZE); // Minimum window size to prevent UI elements from disappearing
+        .with_min_inner_size(MIN_WINDOW_SIZE);
     
     if let Some(icon) = icon_data {
         viewport_builder = viewport_builder.with_icon(icon);

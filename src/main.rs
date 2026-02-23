@@ -136,8 +136,7 @@ fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions 
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let viewport_base = egui::ViewportBuilder::default()
-        .with_inner_size(window_size)
-        .with_centered();
+        .with_inner_size(window_size);
 
     let mut viewport_builder = viewport_base
         .with_decorations(true)

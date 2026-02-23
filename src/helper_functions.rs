@@ -69,9 +69,17 @@ impl Utils {
                 return Err(format!("xdg-open failed: {:?}", status));
             }
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
         {
-            return Err("Open folder not supported on this OS".to_string());
+            let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+            let status = std::process::Command::new("open")
+                .arg("-R")
+                .arg(canonical)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(format!("open -R failed: {:?}", status));
+            }
         }
         Ok(())
     }

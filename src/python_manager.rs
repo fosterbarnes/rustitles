@@ -5,7 +5,6 @@
 
 use std::env;
 use std::io;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use log::{info, warn, error};
@@ -13,6 +12,8 @@ use log::{info, warn, error};
 // Use the logging macros directly from the crate root
 use crate::debug;
 
+#[cfg(windows)]
+use std::io::Write;
 #[cfg(windows)]
 use std::fs::File;
 #[cfg(windows)]

@@ -38,16 +38,22 @@ impl AsyncLogger {
                 exe_dir.join("rustitles_log.txt")
             }
             
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             {
-                // Use XDG cache directory on Linux
+                let home_dir = dirs::home_dir().ok_or("Failed to get home directory")?;
+                let logs_dir = home_dir.join("Library/Logs/rustitles");
+                std::fs::create_dir_all(&logs_dir)?;
+                logs_dir.join("rustitles.log")
+            }
+            
+            #[cfg(target_os = "linux")]
+            {
                 if let Ok(xdg_dirs) = xdg::BaseDirectories::new() {
                     let cache_dir = xdg_dirs.get_cache_home();
                     let app_dir = cache_dir.join("rustitles");
                     std::fs::create_dir_all(&app_dir)?;
                     app_dir.join("rustitles.log")
                 } else {
-                    // Fallback to home directory
                     let home_dir = dirs::home_dir().ok_or("Failed to get home directory")?;
                     let app_dir = home_dir.join(".rustitles");
                     std::fs::create_dir_all(&app_dir)?;

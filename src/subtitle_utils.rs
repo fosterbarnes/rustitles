@@ -169,8 +169,7 @@ impl SubtitleUtils {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         
-        // On Linux, just redirect output
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use std::process::Stdio;
             cmd.stdout(Stdio::piped());

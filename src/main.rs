@@ -1,7 +1,7 @@
 //! Rustitles - Subtitle Downloader Tool
 //! 
 //! A desktop application for automatically downloading subtitles for video files.
-//! Built with Rust and egui for cross-platform (Windows & Linux)
+//! Built with Rust and egui for cross-platform (Windows, Linux & macOS)
 
 // Import all modules
 mod config;
@@ -68,9 +68,9 @@ fn load_app_icon() -> Option<egui::IconData> {
         }
     }
     
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // Try PNG first on Linux, then fallback to ICO
+        // Try PNG first on Linux/macOS, then fallback to ICO
         if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.png")) {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];
@@ -123,10 +123,8 @@ fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
         }
     }
     
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        // On Linux, just center the window on screen
-        // We'll use a simple approach that works with most window managers
         egui::Pos2::new(100.0, 100.0)
     }
 }

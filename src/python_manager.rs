@@ -26,8 +26,8 @@ use windows::Win32::Foundation::{WPARAM, LPARAM};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG};
 
-// Linux-specific imports
-#[cfg(not(windows))]
+// Unix-specific imports (Linux and macOS)
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use dirs;
 
 /// Python and Subliminal installation and management utilities
@@ -36,8 +36,22 @@ pub struct PythonManager;
 impl PythonManager {
     /// Check if Python is installed and return its version
     pub fn get_version() -> Option<String> {
-        // On Linux, check python3 first, then python, then py
-        for cmd in &["python3", "python", "py"] {
+        #[cfg(target_os = "macos")]
+        let commands = vec![
+            "/opt/homebrew/bin/python3",  // Apple Silicon Homebrew
+            "/usr/local/bin/python3",     // Intel Mac Homebrew
+            "python3",
+            "python",
+            "py"
+        ];
+        
+        #[cfg(target_os = "linux")]
+        let commands = vec!["python3", "python", "py"];
+        
+        #[cfg(windows)]
+        let commands = vec!["python3", "python", "py"];
+        
+        for cmd in &commands {
             if let Ok(output) = Self::run_command_hidden(cmd, &["--version"], &std::collections::HashMap::new()) {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -130,7 +144,7 @@ impl PythonManager {
         false
     }
 
-    /// Install Subliminal via pipx (Linux) or pip (Windows)
+    /// Install Subliminal via pipx (Linux) or pip (Windows/macOS)
     pub fn install_subliminal() -> bool {
         #[cfg(windows)]
         {
@@ -150,15 +164,39 @@ impl PythonManager {
             false
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            info!("Installing Subliminal via pip on macOS");
+            
+            let python_commands = vec![
+                "/opt/homebrew/bin/python3",
+                "/usr/local/bin/python3",
+                "python3",
+                "python"
+            ];
+            
+            for cmd in &python_commands {
+                if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "install", "--user", "subliminal"], &std::collections::HashMap::new()) {
+                    if output.status.success() {
+                        info!("Subliminal installed successfully using {}", cmd);
+                        return true;
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        warn!("Failed to install Subliminal using {}: {}", cmd, stderr);
+                    }
+                }
+            }
+            error!("Failed to install Subliminal with all Python commands");
+            false
+        }
+        
+        #[cfg(target_os = "linux")]
         {
             info!("Installing Subliminal via pipx on Linux");
             
-            // First, try to install pipx if it's not available
             if let Ok(output) = Self::run_command_hidden("pipx", &["--version"], &std::collections::HashMap::new()) {
                 if !output.status.success() {
                     info!("pipx not found, attempting to install pipx first");
-                    // Try to install pipx using different methods
                     let pipx_install_attempts = [
                         ("python3", vec!["-m", "pip", "install", "--user", "pipx"]),
                         ("python", vec!["-m", "pip", "install", "--user", "pipx"]),
@@ -179,7 +217,6 @@ impl PythonManager {
                 }
             }
             
-            // Now try to install subliminal using pipx
             if let Ok(output) = Self::run_command_hidden("pipx", &["install", "subliminal"], &std::collections::HashMap::new()) {
                 if output.status.success() {
                     info!("Subliminal installed successfully using pipx");
@@ -190,7 +227,6 @@ impl PythonManager {
                 }
             }
             
-            // Fallback to pip install if pipx fails
             info!("pipx installation failed, trying pip install as fallback");
             for cmd in &["python3", "python"] {
                 if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "install", "--user", "subliminal"], &std::collections::HashMap::new()) {
@@ -299,15 +335,48 @@ impl PythonManager {
             Ok(())
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            // On Linux, Python scripts are typically already in PATH via pip
-            // Just ensure the user's local bin directory is in PATH
+            let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
+            let mut paths_to_add = Vec::new();
+            
+            if std::path::Path::new("/opt/homebrew/bin").exists() {
+                paths_to_add.push("/opt/homebrew/bin".to_string());
+            }
+            if std::path::Path::new("/usr/local/bin").exists() {
+                paths_to_add.push("/usr/local/bin".to_string());
+            }
+            
+            // Python user scripts directory on macOS: ~/Library/Python/3.x/bin
+            let python_lib = home_dir.join("Library").join("Python");
+            if python_lib.exists() {
+                if let Ok(entries) = std::fs::read_dir(&python_lib) {
+                    for entry in entries.flatten() {
+                        let bin_path = entry.path().join("bin");
+                        if bin_path.exists() {
+                            paths_to_add.push(bin_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            
+            let current_path = env::var("PATH").unwrap_or_default();
+            for path in paths_to_add {
+                if !current_path.contains(&path) {
+                    let new_path = format!("{}:{}", path, current_path);
+                    env::set_var("PATH", new_path);
+                }
+            }
+            
+            Ok(())
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
             let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
             let local_bin = home_dir.join(".local").join("bin");
             
             if local_bin.exists() {
-                // Add to current process PATH
                 let current_path = env::var("PATH").unwrap_or_default();
                 if !current_path.contains(local_bin.to_string_lossy().as_ref()) {
                     let new_path = format!("{}:{}", local_bin.display(), current_path);
@@ -323,21 +392,18 @@ impl PythonManager {
     pub fn refresh_environment() -> Result<(), String> {
         #[cfg(windows)]
         {
-            // Get the updated PATH from registry
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
             let env = hkcu.open_subkey_with_flags("Environment", KEY_READ)
                 .map_err(|e| format!("Failed to open registry: {}", e))?;
 
             let user_path: String = env.get_value("Path").unwrap_or_else(|_| "".into());
             
-            // Get system PATH
             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
             let sys_env = hklm.open_subkey_with_flags("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", KEY_READ)
                 .map_err(|e| format!("Failed to open system registry: {}", e))?;
             
             let system_path: String = sys_env.get_value("Path").unwrap_or_else(|_| "".into());
             
-            // Combine system and user paths
             let combined_path = if system_path.trim().is_empty() {
                 user_path
             } else if user_path.trim().is_empty() {
@@ -346,15 +412,51 @@ impl PythonManager {
                 format!("{system_path};{user_path}")
             };
             
-            // Update current process environment
             std::env::set_var("PATH", combined_path);
             
             Ok(())
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            // On Linux, reload environment from shell profile
+            let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
+            let mut paths_to_add = Vec::new();
+            
+            let homebrew_paths = vec![
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+            ];
+            
+            for path in homebrew_paths {
+                if std::path::Path::new(path).exists() {
+                    paths_to_add.push(path.to_string());
+                }
+            }
+            
+            // ~/Library/Python/3.x/bin
+            let python_lib = home_dir.join("Library").join("Python");
+            if python_lib.exists() {
+                if let Ok(entries) = std::fs::read_dir(&python_lib) {
+                    for entry in entries.flatten() {
+                        let bin_path = entry.path().join("bin");
+                        if bin_path.exists() {
+                            paths_to_add.push(bin_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            
+            let current_path = env::var("PATH").unwrap_or_default();
+            let mut new_path_parts = paths_to_add;
+            new_path_parts.push(current_path);
+            let new_path = new_path_parts.join(":");
+            env::set_var("PATH", new_path);
+            
+            Ok(())
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
             let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
             let local_bin = home_dir.join(".local").join("bin");
             
@@ -493,10 +595,9 @@ impl PythonManager {
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         
-        // On Linux, we can't hide the window but we can redirect output
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            // Set environment variables to suppress some output
+            #[cfg(target_os = "linux")]
             command.env("DEBIAN_FRONTEND", "noninteractive");
             command.env("PYTHONUNBUFFERED", "1");
         }

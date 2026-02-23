@@ -35,9 +35,9 @@ impl Default for SubtitleDownloader {
             let python_version = PythonManager::get_version();
             let python_installed = python_version.is_some();
 
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             let pipx_installed = true;
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             let pipx_installed = if python_installed {
                 let available = PythonManager::_pipx_available();
                 if !available {
@@ -621,13 +621,13 @@ impl SubtitleDownloader {
             loop {
                 if tx_clone.send((false, false)).is_err() { return; }
 
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 {
                     let sub = PythonManager::is_subliminal_installed();
                     if tx_clone.send((true, sub)).is_err() { break; }
                     if sub { break; }
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 {
                     let pipx = PythonManager::_pipx_available();
                     let sub = if pipx { PythonManager::is_subliminal_installed() } else { false };
@@ -662,33 +662,31 @@ impl SubtitleDownloader {
             let _old_pipx = self.pipx_installed;
             let old_subliminal = self.subliminal_installed;
 
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 self.pipx_installed = _pipx_available;
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
-                self.pipx_installed = true; // Not used on Windows
+                self.pipx_installed = true;
             }
 
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
-                // On Windows, just check if subliminal is installed
                 if self.python_installed {
                     self.subliminal_installed = subliminal_installed;
                 }
             }
             
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
-                // On Linux, check if both pipx and subliminal are available
                 if self.python_installed && self.pipx_installed {
                     self.subliminal_installed = subliminal_installed;
                 }
             }
 
             // If pipx became available (Linux only), start installing subliminal automatically
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 if !_old_pipx && self.pipx_installed && !self.subliminal_installed {
                     info!("pipx became available, starting automatic Subliminal installation");
@@ -711,14 +709,12 @@ impl SubtitleDownloader {
                 }
             }
 
-            // If subliminal became available, update status
             if !old_subliminal && self.subliminal_installed {
                 info!("Subliminal became available");
                 self.status = "All dependencies installed. Ready to download subtitles.".to_string();
             }
             
-            // Stop background checking and free resources
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 if self.subliminal_installed {
                     self.background_check_handle = None;
@@ -727,7 +723,7 @@ impl SubtitleDownloader {
                 }
             }
             
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 if self.pipx_installed && self.subliminal_installed {
                     self.background_check_handle = None;

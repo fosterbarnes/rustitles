@@ -41,16 +41,24 @@ impl Settings {
             Ok(exe_dir.join("rustitles_settings.json"))
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            // Use XDG config directory on Linux
+            let home_dir = dirs::home_dir().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "Failed to get home directory")
+            })?;
+            let app_support = home_dir.join("Library/Application Support/rustitles");
+            std::fs::create_dir_all(&app_support)?;
+            Ok(app_support.join("settings.json"))
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
             if let Ok(xdg_dirs) = xdg::BaseDirectories::new() {
                 let config_dir = xdg_dirs.get_config_home();
                 let app_dir = config_dir.join("rustitles");
                 std::fs::create_dir_all(&app_dir)?;
                 Ok(app_dir.join("settings.json"))
             } else {
-                // Fallback to home directory
                 let home_dir = dirs::home_dir().ok_or_else(|| {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "Failed to get home directory")
                 })?;

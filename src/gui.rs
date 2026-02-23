@@ -90,16 +90,20 @@ impl SubtitleDownloader {
                 // Start the install thread via app logic
                 self.start_python_install();
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 ui.label("Please install Python 3 and python3-pip using your package manager, then restart Rustitles.");
+            }
+            #[cfg(target_os = "macos")]
+            {
+                ui.label("Please install Python 3 via Homebrew (brew install python3), then restart Rustitles.");
             }
         }
     }
 
     /// Render pipx installation status (Linux only)
     pub fn render_pipx_status(&mut self, _ui: &mut egui::Ui) {
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         {
             if self.is_python_installed() {
                 if self.is_pipx_installed() {
@@ -114,9 +118,8 @@ impl SubtitleDownloader {
     /// Render Subliminal installation status
     pub fn render_subliminal_status(&mut self, ui: &mut egui::Ui) {
         if self.is_python_installed() {
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
-                // On Linux, only show install button if pipx is available
                 if !self.is_pipx_installed() {
                     ui.label("Subliminal not found");
                     ui.horizontal(|ui| {

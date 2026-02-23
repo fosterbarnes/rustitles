@@ -38,3 +38,9 @@ windows_subsystem = "windows"
 [[bin]]
 name = "rustitles"
 path = "src/main.rs"
+
+[package.metadata.bundle]
+name = "Rustitles"
+identifier = "com.fosterbarnes.rustitles"
+icon = ["resources/rustitles_icon.png"]
+category = "Utility"

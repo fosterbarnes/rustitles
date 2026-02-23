@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::sync::mpsc::{self, Receiver};
 
-use crate::data_structures::{SubtitleDownloader, DownloadJob, JobStatus};
+use crate::data_structures::{SubtitleDownloader, DownloadJob, JobStatus, InitCheckResult};
 use crate::settings::Settings;
 use crate::python_manager::PythonManager;
 use crate::subtitle_utils::SubtitleUtils;
@@ -27,176 +27,53 @@ static VERSION_PTR: Lazy<std::sync::Arc<std::sync::Mutex<(Option<String>, Option
 impl Default for SubtitleDownloader {
     fn default() -> Self {
         info!("Initializing SubtitleDownloader");
-        // Load saved settings
         let settings = Settings::load();
-        info!("Loaded settings: languages={:?}, force={}, overwrite={}, ignore_extras={}, concurrent={}", 
-              settings.selected_languages, settings.force_download, settings.overwrite_existing, settings.ignore_local_extras, settings.concurrent_downloads);
-        let python_version = PythonManager::get_version();
-        let python_installed = python_version.is_some();
-        #[cfg(not(windows))]
-        let pipx_installed = {
-            if python_installed {
+
+        // Kick off dependency checks in background so the window appears instantly
+        let (init_tx, init_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let python_version = PythonManager::get_version();
+            let python_installed = python_version.is_some();
+
+            #[cfg(windows)]
+            let pipx_installed = true;
+            #[cfg(not(windows))]
+            let pipx_installed = if python_installed {
                 let available = PythonManager::_pipx_available();
                 if !available {
                     info!("pipx not found, attempting to install pipx");
-                    if PythonManager::try_install_pipx() {
-                        PythonManager::_pipx_available()
-                    } else {
-                        false
-                    }
+                    if PythonManager::try_install_pipx() { PythonManager::_pipx_available() } else { false }
                 } else {
                     available
                 }
             } else {
                 false
-            }
-        };
-        #[cfg(windows)]
-        let pipx_installed = true; // Not used on Windows
-        #[cfg(windows)]
-        let subliminal_installed = if python_installed {
-            PythonManager::is_subliminal_installed()
-        } else {
-            false
-        };
-        
-        #[cfg(not(windows))]
-        let subliminal_installed = if python_installed && pipx_installed {
-            PythonManager::is_subliminal_installed()
-        } else {
-            false
-        };
-        
-        // Start background installation status checking
-        let (tx, rx) = mpsc::channel();
-        let tx_clone = tx.clone();
-        let background_handle = thread::spawn(move || {
-            loop {
-                // Check if main thread is still alive before doing expensive operations
-                if tx_clone.send((false, false)).is_err() {
-                    return; // Main thread has closed, exit immediately
-                }
-                
-                #[cfg(windows)]
-                {
-                    // On Windows, just check subliminal directly
-                    let subliminal_installed = PythonManager::is_subliminal_installed();
-                    if tx_clone.send((true, subliminal_installed)).is_err() {
-                        break; // Main thread has closed
-                    }
-                    if subliminal_installed {
-                        break;
-                    }
-                }
-                
-                #[cfg(not(windows))]
-                {
-                    // Check pipx availability
-                    let _pipx_available = PythonManager::_pipx_available();
-                    
-                    // Check subliminal availability if pipx is available
-                    let subliminal_installed = if _pipx_available {
-                        PythonManager::is_subliminal_installed()
-                    } else {
-                        false
-                    };
-                    
-                    // Send results to main thread
-                    if tx_clone.send((_pipx_available, subliminal_installed)).is_err() {
-                        break; // Main thread has closed
-                    }
-                    // If both are installed, stop checking
-                    if _pipx_available && subliminal_installed {
-                        break;
-                    }
-                }
-                
-                // Use a shorter sleep with multiple checks to be more responsive to shutdown
-                for _ in 0..50 { // 50 * 100ms = 5 seconds total
-                    thread::sleep(std::time::Duration::from_millis(100));
-                    // Check if main thread is still alive by trying to send a ping
-                    if tx_clone.send((false, false)).is_err() {
-                        return; // Main thread has closed, exit immediately
-                    }
-                }
-            }
-        });
-        info!("Python installed: {}, version: {:?}", python_installed, python_version);
-        info!("pipx installed: {}", pipx_installed);
-        info!("Subliminal installed: {}", subliminal_installed);
-        let installing_subliminal = python_installed && pipx_installed && !subliminal_installed;
-        let subliminal_install_result = Arc::new(Mutex::new(None));
-        if python_installed && pipx_installed && !subliminal_installed {
-            info!("Starting automatic Subliminal installation");
-            let result_ptr = Arc::clone(&subliminal_install_result);
-            std::thread::spawn(move || {
-                let success = PythonManager::install_subliminal();
-                let result = if success {
-                    match PythonManager::add_scripts_to_path() {
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(format!("Subliminal installed, but failed to update PATH: {}", e)),
-                    }
-                } else {
-                    Err("pipx/pip install failed".to_string())
-                };
-                *result_ptr.lock().unwrap() = Some(result);
-            });
-        }
-        let downloader = Self {
-            downloads_completed: 0,
-            total_downloads: 0,
-            is_downloading: false,
-            downloading: false,
-            download_thread_handle: None,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-            download_jobs: Arc::new(Mutex::new(Vec::new())),
-            python_installed,
-            python_version,
-            pipx_installed,
-            subliminal_installed,
-            installing_python: false,
-            installing_subliminal,
-            python_install_result: Arc::new(Mutex::new(None)),
-            subliminal_install_result,
-            selected_languages: settings.selected_languages,
-            force_download: settings.force_download,
-            overwrite_existing: settings.overwrite_existing,
-            ignore_local_extras: settings.ignore_local_extras,
-            concurrent_downloads: settings.concurrent_downloads,
-            keep_dropdown_open: false,
-            folder_path: String::new(),
-            scanned_videos: Arc::new(Mutex::new(Vec::new())),
-            videos_missing_subs: Arc::new(Mutex::new(Vec::new())),
-            scanning: false,
-            scan_done_receiver: None,
-            ignored_extra_folders: 0,
-            status: if python_installed && pipx_installed && !subliminal_installed {
-                "Python and pipx detected. Installing Subliminal...".to_string()
+            };
+
+            let (subliminal_installed, subliminal_version) = if python_installed && pipx_installed {
+                let installed = PythonManager::is_subliminal_installed();
+                let version = if installed { PythonManager::get_subliminal_version() } else { None };
+                (installed, version)
             } else {
-                "Scanning will start automatically when a folder is selected".to_string()
-            },
-            pipx_copied: false,
-            pipx_copy_time: None,
-            last_refresh_time: std::time::Instant::now(),
-            refresh_interval: std::time::Duration::from_secs(2), // Check every 2 seconds
-            cached_jobs: Vec::new(),
-            last_jobs_update: std::time::Instant::now(),
-            background_check_handle: Some(background_handle),
-            background_check_sender: Some(tx),
-            background_check_receiver: Some(rx),
-            latest_version: None,
-            version_check_error: None,
-            version_checked: false,
-        };
-        // Start version check in background (use static VERSION_PTR)
+                (false, None)
+            };
+
+            info!("Python installed: {}, version: {:?}", python_installed, python_version);
+            info!("pipx installed: {}", pipx_installed);
+            info!("Subliminal installed: {}, version: {:?}", subliminal_installed, subliminal_version);
+
+            let _ = init_tx.send(InitCheckResult { python_version, pipx_installed, subliminal_installed, subliminal_version });
+        });
+
+        // Start version check in background
         let version_ptr_clone = VERSION_PTR.clone();
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let url = "https://api.github.com/repos/fosterbarnes/rustitles/releases/latest";
             let client = reqwest::blocking::Client::new();
             let resp = client.get(url)
                 .header("User-Agent", "rustitles-version-check")
                 .send();
-            let (mut latest, mut err, checked) = (None, None, true);
+            let (mut latest, mut err) = (None, None);
             match resp {
                 Ok(r) => {
                     if let Ok(json) = r.json::<serde_json::Value>() {
@@ -209,15 +86,56 @@ impl Default for SubtitleDownloader {
                         err = Some("Failed to parse JSON".to_string());
                     }
                 }
-                Err(e) => {
-                    err = Some(format!("HTTP error: {}", e));
-                }
+                Err(e) => err = Some(format!("HTTP error: {}", e)),
             }
-            let mut lock = version_ptr_clone.lock().unwrap();
-            *lock = (latest, err, checked);
+            *version_ptr_clone.lock().unwrap() = (latest, err, true);
         });
-        // Poll for version check result in update()
-        downloader
+
+        Self {
+            downloads_completed: 0,
+            total_downloads: 0,
+            is_downloading: false,
+            downloading: false,
+            download_thread_handle: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            download_jobs: Arc::new(Mutex::new(Vec::new())),
+            python_installed: false,
+            python_version: None,
+            pipx_installed: false,
+            subliminal_installed: false,
+            subliminal_version: None,
+            installing_python: false,
+            installing_subliminal: false,
+            python_install_result: Arc::new(Mutex::new(None)),
+            subliminal_install_result: Arc::new(Mutex::new(None)),
+            selected_languages: settings.selected_languages,
+            force_download: settings.force_download,
+            overwrite_existing: settings.overwrite_existing,
+            ignore_local_extras: settings.ignore_local_extras,
+            concurrent_downloads: settings.concurrent_downloads,
+            keep_dropdown_open: false,
+            folder_path: String::new(),
+            scanned_videos: Arc::new(Mutex::new(Vec::new())),
+            videos_missing_subs: Arc::new(Mutex::new(Vec::new())),
+            scanning: false,
+            scan_done_receiver: None,
+            ignored_extra_folders: 0,
+            status: "Checking dependencies...".to_string(),
+            pipx_copied: false,
+            pipx_copy_time: None,
+            last_refresh_time: std::time::Instant::now(),
+            refresh_interval: std::time::Duration::from_secs(2),
+            cached_jobs: Vec::new(),
+            last_jobs_update: std::time::Instant::now(),
+            background_check_handle: None,
+            background_check_sender: None,
+            background_check_receiver: None,
+            latest_version: None,
+            version_check_error: None,
+            version_checked: false,
+            checking_deps: true,
+            init_check_receiver: Some(init_rx),
+        }
     }
 }
 
@@ -516,7 +434,7 @@ impl SubtitleDownloader {
                                 info!("SUBTITLE JOBS OUTPUT: {} - {}", video_name, status_str);
                                 // --- LOGGING: Subtitle file paths ---
                                 for sub_path in &subtitle_paths {
-                                    info!("SUBTITLE JOBS OUTPUT: 📄 {}", sub_path.display());
+                                    info!("SUBTITLE JOBS OUTPUT: {}", sub_path.display());
                                 }
                                 // --- END LOGGING ---
                                 
@@ -650,6 +568,84 @@ impl SubtitleDownloader {
         }
     }
 
+    /// Handle the one-time startup dependency check result
+    pub fn poll_init_check(&mut self) {
+        if !self.checking_deps { return; }
+
+        let result = match self.init_check_receiver.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            Some(r) => r,
+            None => return,
+        };
+        self.init_check_receiver = None;
+        self.checking_deps = false;
+
+        self.python_version = result.python_version;
+        self.python_installed = self.python_version.is_some();
+        self.pipx_installed = result.pipx_installed;
+        self.subliminal_installed = result.subliminal_installed;
+        self.subliminal_version = result.subliminal_version;
+
+        // Always ensure Python Scripts folders are in PATH when Python is present
+        if self.python_installed {
+            if let Err(e) = PythonManager::add_scripts_to_path() {
+                warn!("Failed to add Python Scripts to PATH: {}", e);
+            }
+            if let Err(e) = PythonManager::refresh_environment() {
+                warn!("Failed to refresh environment: {}", e);
+            }
+        }
+
+        // Auto-install subliminal if python (and pipx on Linux) are ready
+        if self.python_installed && self.pipx_installed && !self.subliminal_installed {
+            info!("Starting automatic Subliminal installation");
+            self.installing_subliminal = true;
+            self.status = "Python and pipx detected. Installing Subliminal...".to_string();
+            let result_ptr = self.subliminal_install_result.clone();
+            thread::spawn(move || {
+                let success = PythonManager::install_subliminal();
+                let result = if success {
+                    PythonManager::add_scripts_to_path().map_err(|e| format!("Subliminal installed, but failed to update PATH: {}", e))
+                } else {
+                    Err("pipx/pip install failed".to_string())
+                };
+                *result_ptr.lock().unwrap() = Some(result);
+            });
+        } else {
+            self.status = "Scanning will start automatically when a folder is selected".to_string();
+        }
+
+        // Start background polling thread to pick up later dependency changes
+        let (tx, rx) = mpsc::channel();
+        let tx_clone = tx.clone();
+        let bg = thread::spawn(move || {
+            loop {
+                if tx_clone.send((false, false)).is_err() { return; }
+
+                #[cfg(windows)]
+                {
+                    let sub = PythonManager::is_subliminal_installed();
+                    if tx_clone.send((true, sub)).is_err() { break; }
+                    if sub { break; }
+                }
+                #[cfg(not(windows))]
+                {
+                    let pipx = PythonManager::_pipx_available();
+                    let sub = if pipx { PythonManager::is_subliminal_installed() } else { false };
+                    if tx_clone.send((pipx, sub)).is_err() { break; }
+                    if pipx && sub { break; }
+                }
+
+                for _ in 0..50 {
+                    thread::sleep(std::time::Duration::from_millis(100));
+                    if tx_clone.send((false, false)).is_err() { return; }
+                }
+            }
+        });
+        self.background_check_handle = Some(bg);
+        self.background_check_sender = Some(tx);
+        self.background_check_receiver = Some(rx);
+    }
+
     /// Refresh installation status using background thread results
     pub fn refresh_installation_status(&mut self) {
         // Collect all available messages first
@@ -718,7 +714,7 @@ impl SubtitleDownloader {
             // If subliminal became available, update status
             if !old_subliminal && self.subliminal_installed {
                 info!("Subliminal became available");
-                self.status = "✅ All dependencies installed! Ready to download subtitles.".to_string();
+                self.status = "All dependencies installed. Ready to download subtitles.".to_string();
             }
             
             // Stop background checking and free resources
@@ -754,9 +750,12 @@ impl SubtitleDownloader {
                         if let Err(e) = PythonManager::refresh_environment() {
                             error!("Failed to refresh environment: {}", e);
                         }
+                        if let Err(e) = PythonManager::add_scripts_to_path() {
+                            error!("Failed to add Python Scripts to PATH: {}", e);
+                        }
                         self.python_version = PythonManager::get_version();
                         self.python_installed = self.python_version.is_some();
-                        self.status = "  Python installed successfully. Installing Subliminal...".to_string();
+                        self.status = "Python installed successfully. Installing Subliminal...".to_string();
                         self.subliminal_installed = PythonManager::is_subliminal_installed();
 
                         // Start installing subliminal automatically
@@ -777,7 +776,7 @@ impl SubtitleDownloader {
                     }
                     Err(e) => {
                         error!("Python installation failed: {}", e);
-                        self.status = format!("❌ Python install failed: {}", e);
+                        self.status = format!("Python install failed: {}", e);
                     }
                 }
             }
@@ -795,11 +794,12 @@ impl SubtitleDownloader {
                         }
                         
                         self.subliminal_installed = true;
-                        self.status = "✅ Subliminal installed.".to_string();
+                        self.subliminal_version = PythonManager::get_subliminal_version();
+                        self.status = "Subliminal installed.".to_string();
                     }
                     Err(e) => {
                         error!("Subliminal installation failed: {}", e);
-                        self.status = format!("❌ Subliminal install failed: {}", e);
+                        self.status = format!("Subliminal install failed: {}", e);
                     }
                 }
             }
@@ -839,6 +839,7 @@ impl SubtitleDownloader {
     pub fn is_python_installed(&self) -> bool { self.python_installed }
     pub fn is_pipx_installed(&self) -> bool { self.pipx_installed }
     pub fn get_python_version(&self) -> Option<&String> { self.python_version.as_ref() }
+    pub fn get_subliminal_version(&self) -> Option<&String> { self.subliminal_version.as_ref() }
     pub fn get_status(&self) -> &str { &self.status }
     pub fn get_folder_path(&self) -> &str { &self.folder_path }
     pub fn is_scanning(&self) -> bool { self.scanning }
@@ -881,7 +882,7 @@ impl SubtitleDownloader {
             return; // Already installing
         }
         self.installing_python = true;
-        self.status = "  Installing Python... Check your taskbar for a UAC prompt (shield icon)".to_string();
+        self.status = "Installing Python... Check your taskbar for a UAC prompt (shield icon)".to_string();
         let result_ptr = self.python_install_result.clone();
         std::thread::spawn(move || {
             let result = (|| {

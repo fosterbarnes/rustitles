@@ -1,5 +1,5 @@
 # Define variables
-$rootFolder = "C:\Users\Foster\Documents\Rust\rustitles"
+$rootFolder = $PSScriptRoot
 $releaseEXE = "$rootFolder\target\release\rustitles.exe"
 $versionTXT = "$rootFolder\src\version.txt"
 $version = Get-Content $versionTXT -Raw | ForEach-Object { $_.Trim() }

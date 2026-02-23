@@ -13,11 +13,6 @@ use log::{info, warn, error};
 // Use the logging macros directly from the crate root
 use crate::debug;
 
-// Windows-specific imports
-#[cfg(windows)]
-use crate::PYTHON_INSTALLER_URL;
-
-// Windows-specific imports
 #[cfg(windows)]
 use std::fs::File;
 #[cfg(windows)]
@@ -58,6 +53,33 @@ impl PythonManager {
             }
         }
         debug!("No valid Python 3 installation found");
+        None
+    }
+
+    /// Return the installed Subliminal version string, if available
+    pub fn get_subliminal_version() -> Option<String> {
+        if let Ok(output) = Self::run_command_hidden("subliminal", &["--version"], &std::collections::HashMap::new()) {
+            if output.status.success() {
+                let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let fallback = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let text = if !out.is_empty() { out } else { fallback };
+                if text.to_lowercase().contains("subliminal") {
+                    return Some(text);
+                }
+            }
+        }
+        for cmd in &["python3", "python", "py"] {
+            if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "show", "subliminal"], &std::collections::HashMap::new()) {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if output.status.success() {
+                    for line in stdout.lines() {
+                        if let Some(ver) = line.strip_prefix("Version: ") {
+                            return Some(format!("subliminal {}", ver.trim()));
+                        }
+                    }
+                }
+            }
+        }
         None
     }
 
@@ -187,50 +209,74 @@ impl PythonManager {
         }
     }
 
-    /// Add Python Scripts directory to PATH
+    /// Add Python Scripts directories to the user PATH (both the system
+    /// install Scripts folder next to python.exe, and the per-user Scripts
+    /// folder from `sysconfig`).
     pub fn add_scripts_to_path() -> Result<(), String> {
         #[cfg(windows)]
         {
-            let mut base_path = None;
+            let mut scripts_dirs: Vec<String> = Vec::new();
 
+            // 1) System/install Scripts: directory containing python.exe + \Scripts
             for cmd in &["python", "py"] {
-                let output = Self::run_command_hidden(cmd, &["-m", "site", "--user-base"], &std::collections::HashMap::new());
-
-                match output {
-                    Ok(output) if output.status.success() => {
-                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if !path.is_empty() {
-                            base_path = Some(path);
+                let output = Self::run_command_hidden(
+                    cmd,
+                    &["-c", "import sys, os; print(os.path.dirname(sys.executable))"],
+                    &std::collections::HashMap::new(),
+                );
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !dir.is_empty() {
+                            scripts_dirs.push(format!("{}\\Scripts", dir));
                             break;
                         }
-                    }
-                    Ok(output) => {
-                        let err = String::from_utf8_lossy(&output.stderr);
-                        eprintln!("Failed to get user base with {}: {}", cmd, err);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to execute {}: {}", cmd, e);
                     }
                 }
             }
 
-            let base_path = base_path.ok_or_else(|| "Failed to get user base path from python/py".to_string())?;
-            let scripts_path = format!("{}\\Scripts", base_path);
+            // 2) Per-user Scripts: sysconfig gives the exact versioned path
+            for cmd in &["python", "py"] {
+                let output = Self::run_command_hidden(
+                    cmd,
+                    &["-c", "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))"],
+                    &std::collections::HashMap::new(),
+                );
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !dir.is_empty() {
+                            scripts_dirs.push(dir);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if scripts_dirs.is_empty() {
+                return Err("Failed to locate any Python Scripts directory".to_string());
+            }
 
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
             let env = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
                 .map_err(|e| format!("Failed to open registry: {}", e))?;
 
-            let current_path: String = env.get_value("Path").unwrap_or_else(|_| "".into());
+            let mut current_path: String = env.get_value("Path").unwrap_or_else(|_| "".into());
+            let mut changed = false;
 
-            if !current_path.to_lowercase().contains(&scripts_path.to_lowercase()) {
-                let new_path = if current_path.trim().is_empty() {
-                    scripts_path.clone()
-                } else {
-                    format!("{current_path};{scripts_path}")
-                };
+            for scripts_path in &scripts_dirs {
+                if !current_path.to_lowercase().contains(&scripts_path.to_lowercase()) {
+                    if current_path.trim().is_empty() {
+                        current_path = scripts_path.clone();
+                    } else {
+                        current_path = format!("{current_path};{scripts_path}");
+                    }
+                    changed = true;
+                }
+            }
 
-                env.set_value("Path", &new_path)
+            if changed {
+                env.set_value("Path", &current_path)
                     .map_err(|e| format!("Failed to set PATH: {}", e))?;
 
                 unsafe {
@@ -325,10 +371,40 @@ impl PythonManager {
     }
 
     #[cfg(windows)]
+    /// Query the endoflife.date API for the latest stable Python 3.x version
+    /// and return the download URL for the amd64 Windows installer.
+    pub fn get_latest_python_url() -> io::Result<String> {
+        let resp = reqwest::blocking::get("https://endoflife.date/api/python.json")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to fetch Python version info: {}", e)))?;
+
+        let releases: serde_json::Value = resp.json()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse Python version JSON: {}", e)))?;
+
+        let version = releases.as_array()
+            .and_then(|arr| {
+                arr.iter().find_map(|entry| {
+                    let cycle = entry.get("cycle")?.as_str()?;
+                    if cycle.starts_with("3.") {
+                        entry.get("latest")?.as_str().map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No stable Python 3.x release found"))?;
+
+        info!("Latest Python version from API: {}", version);
+        Ok(format!(
+            "https://www.python.org/ftp/python/{version}/python-{version}-amd64.exe"
+        ))
+    }
+
+    #[cfg(windows)]
     /// Download Python installer from official website
     pub fn download_installer() -> io::Result<PathBuf> {
-        let url = PYTHON_INSTALLER_URL;
-        let response = reqwest::blocking::get(url).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let url = Self::get_latest_python_url()?;
+        info!("Downloading Python installer from: {}", url);
+        let response = reqwest::blocking::get(&url).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         let temp_dir = env::temp_dir();
         let installer_path = temp_dir.join("python-installer.exe");

@@ -4,7 +4,7 @@
 //! supported file formats, download limits, and UI settings.
 
 /// The current application version (keep in sync with Cargo.toml)
-pub const APP_VERSION: &str = "2.1.3";
+pub const APP_VERSION: &str = "2.2.0";
 
 /// Supported video file extensions for subtitle scanning
 pub static VIDEO_EXTENSIONS: &[&str] = &[
@@ -21,14 +21,6 @@ pub static DEFAULT_CONCURRENT_DOWNLOADS: usize = 25;
 
 /// Maximum concurrent downloads
 pub static MAX_CONCURRENT_DOWNLOADS: usize = 100;
-
-/// Python installer URL (Windows-specific)
-#[cfg(windows)]
-pub static PYTHON_INSTALLER_URL: &str = "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.exe";
-
-/// Python installer URL (Linux-specific)
-#[cfg(not(windows))]
-pub static PYTHON_INSTALLER_URL: &str = "https://www.python.org/ftp/python/3.13.5/python-3.13.5-amd64.exe";
 
 /// Default window size
 pub static WINDOW_SIZE: [f32; 2] = [800.0, 580.0];

@@ -46,6 +46,7 @@ pub struct SubtitleDownloader {
     pub python_version: Option<String>,
     pub pipx_installed: bool,
     pub subliminal_installed: bool,
+    pub subliminal_version: Option<String>,
     pub installing_python: bool,
     pub installing_subliminal: bool,
     pub python_install_result: Arc<Mutex<Option<Result<(), String>>>>,
@@ -69,8 +70,8 @@ pub struct SubtitleDownloader {
 
     // UI status
     pub status: String,
-    pub pipx_copied: bool, // Add this field to track copy state
-    pub pipx_copy_time: Option<std::time::Instant>, // For timing the copied message
+    pub pipx_copied: bool,
+    pub pipx_copy_time: Option<std::time::Instant>,
     
     // Auto-refresh state (unused but kept for potential future use)
     #[allow(dead_code)]
@@ -91,4 +92,16 @@ pub struct SubtitleDownloader {
     pub latest_version: Option<String>,
     pub version_check_error: Option<String>,
     pub version_checked: bool,
+
+    // Startup dependency check (non-blocking init)
+    pub checking_deps: bool,
+    pub init_check_receiver: Option<std::sync::mpsc::Receiver<InitCheckResult>>,
+}
+
+/// Result of the background startup dependency check
+pub struct InitCheckResult {
+    pub python_version: Option<String>,
+    pub pipx_installed: bool,
+    pub subliminal_installed: bool,
+    pub subliminal_version: Option<String>,
 } 

@@ -79,20 +79,11 @@ impl SubtitleDownloader {
     /// Render Python installation status
     pub fn render_python_status(&mut self, ui: &mut egui::Ui) {
         if self.is_python_installed() {
-            // Only show checkmark if both Python and Subliminal are installed
-            if self.is_subliminal_installed() && !self.installing_python && !self.installing_subliminal {
-                ui.label(format!(
-                    "✅ Python is installed: {}",
-                    self.get_python_version().unwrap_or(&"Unknown version".to_string())
-                ));
-            } else {
-                ui.label(format!(
-                    "Python is installed: {}",
-                    self.get_python_version().unwrap_or(&"Unknown version".to_string())
-                ));
-            }
+            let raw = self.get_python_version().cloned().unwrap_or_default();
+            let ver = raw.strip_prefix("Python ").unwrap_or(&raw);
+            ui.label(format!("Python v{}", ver));
         } else {
-            ui.label("❌ Python not found");
+            ui.label("Python not found");
             #[cfg(windows)]
             if ui.button("Install Python").clicked() {
                 info!("User initiated Python installation");
@@ -112,9 +103,9 @@ impl SubtitleDownloader {
         {
             if self.is_python_installed() {
                 if self.is_pipx_installed() {
-                    _ui.label("✅ pipx is installed");
+                    _ui.label("pipx is installed");
                 } else {
-                    _ui.label("❌ pipx not found");
+                    _ui.label("pipx not found");
                 }
             }
         }
@@ -127,7 +118,7 @@ impl SubtitleDownloader {
             {
                 // On Linux, only show install button if pipx is available
                 if !self.is_pipx_installed() {
-                    ui.label("❌ Subliminal not found");
+                    ui.label("Subliminal not found");
                     ui.horizontal(|ui| {
                         ui.label("Install missing dependencies:");
                         let cmd = "sudo apt install pipx && pipx install subliminal".to_string();
@@ -137,7 +128,7 @@ impl SubtitleDownloader {
                             .interactive(false)
                             .font(egui::TextStyle::Monospace)
                             .horizontal_align(egui::Align::Center));
-                        let copy_icon = egui::RichText::new("📋").size(18.0);
+                        let copy_icon = egui::RichText::new("Copy").size(14.0);
                         if ui.add(egui::Button::new(copy_icon)).on_hover_text("Copy to clipboard").clicked() {
                             ui.output_mut(|o| o.copied_text = cmd.clone());
                             self.set_pipx_copied(true);
@@ -150,11 +141,14 @@ impl SubtitleDownloader {
                     return;
                 }
             }
-            // Only show checkmark if not currently installing subliminal
             if self.is_subliminal_installed() && !self.installing_subliminal {
-                ui.label("✅ Subliminal is installed");
+                let raw = self.get_subliminal_version().cloned().unwrap_or_default();
+                let ver = raw.strip_prefix("subliminal, version ")
+                    .or_else(|| raw.strip_prefix("subliminal "))
+                    .unwrap_or(&raw);
+                ui.label(format!("Subliminal v{}", ver));
             } else if !self.is_subliminal_installed() {
-                ui.label("❌ Subliminal not found");
+                ui.label("Subliminal not found");
                 if ui.button("Install Subliminal").clicked() {
                     info!("User initiated Subliminal installation");
                     // Note: This would need to be handled in the app logic
@@ -166,13 +160,7 @@ impl SubtitleDownloader {
         if self.is_version_checked() {
             if let Some(latest) = self.get_latest_version() {
                 if Self::is_outdated(APP_VERSION, latest) {
-                    let exe_url = if cfg!(target_os = "windows") {
-                        format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest)
-                    } else if cfg!(target_os = "linux") {
-                        format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest)
-                    } else {
-                        format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest)
-                    };
+                    let exe_url = format!("https://github.com/fosterbarnes/rustitles/releases/tag/{}", latest);
                     let link_text = format!("-> Rustitles {}", latest);
                     let link_rich = egui::RichText::new(link_text).color(egui::Color32::from_rgb(80, 160, 255));
                     ui.horizontal_wrapped(|ui| {
@@ -444,7 +432,7 @@ impl SubtitleDownloader {
                             let path_str = sub_path.display().to_string();
                             let is_srt = sub_path.extension().map(|e| e.eq_ignore_ascii_case("srt")).unwrap_or(false);
                             if is_srt {
-                                let text = format!("📄 {}", path_str);
+                                let text = path_str.to_string();
                                 let font_id = egui::TextStyle::Body.resolve(ui.style());
                                 let galley_normal = ui.fonts(|f| f.layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE));
                                 let _galley_underlined = ui.fonts(|f| f.layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE));
@@ -481,7 +469,7 @@ impl SubtitleDownloader {
                                     }
                                 }
                             } else {
-                                ui.label(format!("📄 {}", path_str));
+                                ui.label(path_str);
                             }
                         });
                     }
@@ -617,21 +605,16 @@ impl SubtitleDownloader {
 
 impl eframe::App for SubtitleDownloader {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check download completion
+        self.poll_init_check();
         self.check_download_completion();
-
-        // Refresh installation status and auto-proceed
         self.refresh_installation_status();
-
-        // Handle installation states
         self.handle_installation_states();
-
         self.poll_version_check();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.render_header(ui);
             
-            if self.installing_python || self.installing_subliminal {
+            if self.checking_deps || self.installing_python || self.installing_subliminal {
                 self.render_installation_wait(ui);
                 return;
             }
@@ -702,8 +685,7 @@ impl eframe::App for SubtitleDownloader {
             }
         }
 
-        // If installing, repaint at 60 FPS for smooth spinner
-        if self.installing_python || self.installing_subliminal {
+        if self.checking_deps || self.installing_python || self.installing_subliminal {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }

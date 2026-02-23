@@ -189,6 +189,7 @@ fn cleanup_on_exit() {
 
 /// Custom error type for application-specific errors
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

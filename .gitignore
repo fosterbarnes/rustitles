@@ -1,9 +1,9 @@
 target/
 rustitles_log.txt
 rustitles_settings.json
-src/subdivx-dl.exe
 AppDir
 appimagetool-x86_64.AppImage
 linuxdeploy-x86_64.AppImage
 AppImageTool
 System Volume Information
+*.code-workspace

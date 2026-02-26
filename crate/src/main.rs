@@ -68,9 +68,42 @@ fn load_app_icon() -> Option<egui::IconData> {
         }
     }
     
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        // Try PNG first on Linux, then fallback to ICO
+        // Use rustitles_mac_icon.png on macOS so Dock icon matches the .app bundle icon
+        if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_mac_icon.png")) {
+            let rgba = image.to_rgba8();
+            let size = [rgba.width() as u32, rgba.height() as u32];
+            Some(egui::IconData {
+                rgba: rgba.into_raw(),
+                width: size[0],
+                height: size[1],
+            })
+        } else if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.png")) {
+            let rgba = image.to_rgba8();
+            let size = [rgba.width() as u32, rgba.height() as u32];
+            Some(egui::IconData {
+                rgba: rgba.into_raw(),
+                width: size[0],
+                height: size[1],
+            })
+        } else if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico")) {
+            let rgba = image.to_rgba8();
+            let size = [rgba.width() as u32, rgba.height() as u32];
+            Some(egui::IconData {
+                rgba: rgba.into_raw(),
+                width: size[0],
+                height: size[1],
+            })
+        } else {
+            warn!("Failed to load application icon");
+            None
+        }
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        // Linux: try PNG first, then fallback to ICO
         if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.png")) {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];

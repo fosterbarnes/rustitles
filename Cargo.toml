@@ -1,40 +1,5 @@
-[package]
-name = "rustitles"
-version = "2.2.0"
-edition = "2021"
-build = "build.rs"
-
-[dependencies]
-eframe = "0.27"
-which = "6.0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-async-process = "2.3.1"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
-rfd = "0.11.4"
-indicatif = "0.17"
-image = "0.24"
-log = "0.4"
-env_logger = "0.11"
-chrono = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-dirs = "5.0"
-xdg = "2.4"
-once_cell = "1.19"
-
-[target.'cfg(windows)'.dependencies]
-winreg = "0.52.0"
-windows = { version = "0.56.0", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Foundation", "Win32_Graphics_Gdi"] }
-
-[target.'cfg(windows)'.build-dependencies]
-winres = "0.1"
-embed-resource = "3.0"
-
-[package.metadata.winres]
-windows_subsystem = "windows"
-
-# Set binary name to 'rustitles_linux' on Linux, 'rustitles' elsewhere
-[[bin]]
-name = "rustitles"
-path = "src/main.rs"
+# Workspace root: only member is the app crate.
+# Run from repo root: cargo run, cargo build, etc.
+[workspace]
+members = ["crate"]
+resolver = "2"

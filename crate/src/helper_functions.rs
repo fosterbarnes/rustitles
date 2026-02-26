@@ -45,6 +45,34 @@ impl Utils {
         }
     }
 
+    /// Get the path to the log file
+    pub fn get_log_path() -> Result<std::path::PathBuf, String> {
+        #[cfg(windows)]
+        {
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
+            Ok(exe_dir.join("rustitles_log.txt"))
+        }
+        #[cfg(not(windows))]
+        {
+            if let Ok(xdg_dirs) = xdg::BaseDirectories::new() {
+                Ok(xdg_dirs.get_cache_home().join("rustitles").join("rustitles.log"))
+            } else {
+                let home_dir = dirs::home_dir().ok_or("Failed to get home directory")?;
+                Ok(home_dir.join(".rustitles").join("rustitles.log"))
+            }
+        }
+    }
+
+    /// Open the file browser with the log file highlighted
+    pub fn open_log_file() -> Result<(), String> {
+        let log_path = Self::get_log_path()?;
+        if !log_path.exists() {
+            return Err("Log file does not exist yet".to_string());
+        }
+        Self::open_containing_folder(&log_path)
+    }
+
     /// Open the containing folder of a file in the system's file explorer
     pub fn open_containing_folder(path: &Path) -> Result<(), String> {
         let _folder = path.parent().ok_or("No parent folder")?;
@@ -69,7 +97,19 @@ impl Utils {
                 return Err(format!("xdg-open failed: {:?}", status));
             }
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+            let status = std::process::Command::new("open")
+                .arg("-R")
+                .arg(&canonical)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(format!("open -R failed: {:?}", status));
+            }
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             return Err("Open folder not supported on this OS".to_string());
         }

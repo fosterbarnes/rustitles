@@ -2,17 +2,21 @@
 
 Rustitles will scan a given folder and automatically download subtitles in the selected language(s). It will scan recursively in the given folder for all video files, if missing subtitles are found, it will download them. This is built with media servers in mind, so if you have a large library of movies/tv-shows, just select the root folder used for your media server and wait for it to complete. This is a portable cross-platform application.
 
-![rustitles_v2.1.2](https://i.postimg.cc/XvdsfrDg/rustitles-2.png)
+<table>
+   <tr>
+      <td><img src="https://raw.githubusercontent.com/fosterbarnes/rustitles/refs/heads/main/crate/resources/scr01.png" alt="Screenshot 1" width="800" /></td>
+   </tr>
+</table>
 
 ## How to install
 
 ### Windows
 - Download and install the latest version of [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.2.0/rustitles.v2.2.0.exe) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.3.0/rustitles.v2.3.0.exe) of Rustitles
 - Save rustitles.exe somewhere memorable, or just run it from your downloads folder.
 
 ### Linux
-- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.2.0/rustitles.v2.2.0.AppImage) of Rustitles
+- Download the [latest release](https://github.com/fosterbarnes/rustitles/releases/download/v2.3.0/rustitles.v2.3.0.AppImage) of Rustitles
 - Save rustitles.AppImage somewhere memorable, or just run it from your downloads folder.
 - Make it executable. Example: `chmod +x rustitles.AppImage`
 
@@ -61,10 +65,6 @@ If you are unaware of Subliminal, it is a command line tool that uses python to 
 I've tested for Windows Defender false postives in a virtual machine, and nothing was detected. However, any app that is not codesigned has a chance of tripping your antivirus (codesigning is very, very expensive). If this happens, add "rustitles.exe" or the folder therein as an exclusion for your antivirus. 
 
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
-
-VirusTotal scans:
-- [rustitles v2.1.3.exe](https://www.virustotal.com/gui/file/edd2a5b9a994dae4151deee657ba1c9a36df796e647cf02a38da3475adac2e90)
-- [rustitles v2.1.3.AppImage](https://www.virustotal.com/gui/file/626928dd4540bf912b560a601c367d86dba1c48c422b47b5abb5c781b99b7c5f)
 
 Any detections seen can be assumed as false positives due to the app checking for and installing python if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub. 
 

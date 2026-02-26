@@ -26,8 +26,8 @@ use windows::Win32::Foundation::{WPARAM, LPARAM};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG};
 
-// Linux-specific imports
-#[cfg(not(windows))]
+// Unix-specific imports (Linux and macOS)
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use dirs;
 
 /// Python and Subliminal installation and management utilities
@@ -36,15 +36,26 @@ pub struct PythonManager;
 impl PythonManager {
     /// Check if Python is installed and return its version
     pub fn get_version() -> Option<String> {
-        // On Linux, check python3 first, then python, then py
-        for cmd in &["python3", "python", "py"] {
+        #[cfg(target_os = "macos")]
+        let commands = &[
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "python3",
+            "python",
+            "py",
+        ];
+        #[cfg(target_os = "linux")]
+        let commands = &["python3", "python", "py"];
+        #[cfg(windows)]
+        let commands = &["python", "py", "python3"];
+
+        for cmd in commands {
             if let Ok(output) = Self::run_command_hidden(cmd, &["--version"], &std::collections::HashMap::new()) {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                     let version = if !stdout.is_empty() { stdout } else { stderr };
                     debug!("Python version output for {}: {}", cmd, version);
-                    // Only accept Python 3.x.y
                     if version.starts_with("Python 3.") {
                         debug!("Found valid Python 3 version: {} using command: {}", version, cmd);
                         return Some(version);
@@ -58,79 +69,84 @@ impl PythonManager {
 
     /// Return the installed Subliminal version string, if available
     pub fn get_subliminal_version() -> Option<String> {
-        if let Ok(output) = Self::run_command_hidden("subliminal", &["--version"], &std::collections::HashMap::new()) {
-            if output.status.success() {
-                let out = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let fallback = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let text = if !out.is_empty() { out } else { fallback };
-                if text.to_lowercase().contains("subliminal") {
-                    return Some(text);
-                }
-            }
-        }
-        for cmd in &["python3", "python", "py"] {
-            if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "show", "subliminal"], &std::collections::HashMap::new()) {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if output.status.success() {
-                    for line in stdout.lines() {
-                        if let Some(ver) = line.strip_prefix("Version: ") {
-                            return Some(format!("subliminal {}", ver.trim()));
-                        }
-                    }
-                }
-            }
-        }
-        None
+        Self::check_subliminal().1
     }
 
     /// Check if Subliminal is installed
     pub fn is_subliminal_installed() -> bool {
-        // First check if subliminal command is directly available (works for both pip and pipx installations)
-        if let Ok(output) = Self::run_command_hidden("subliminal", &["--version"], &std::collections::HashMap::new()) {
+        Self::check_subliminal().0
+    }
+
+    /// Combined check: returns (installed, version) in a single pass to avoid
+    /// redundant subprocess spawns. Each probe that proves subliminal exists
+    /// also extracts the version string when possible.
+    pub fn check_subliminal() -> (bool, Option<String>) {
+        let empty_env = std::collections::HashMap::new();
+
+        // 1) Direct command -- fastest path
+        if let Ok(output) = Self::run_command_hidden("subliminal", &["--version"], &empty_env) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             debug!("subliminal --version stdout: {} | stderr: {}", stdout, stderr);
-            if output.status.success() && (stdout.contains("subliminal") || stderr.contains("subliminal")) {
-                debug!("Subliminal found as direct command");
-                return true;
+            if output.status.success() {
+                let text = if !stdout.trim().is_empty() {
+                    stdout.trim().to_string()
+                } else {
+                    stderr.trim().to_string()
+                };
+                if text.to_lowercase().contains("subliminal") {
+                    debug!("Subliminal found as direct command");
+                    return (true, Some(text));
+                }
             }
         }
-        
-        // Check if installed via pipx
-        if let Ok(output) = Self::run_command_hidden("pipx", &["list"], &std::collections::HashMap::new()) {
+
+        // 2) pipx list (Linux/macOS)
+        if let Ok(output) = Self::run_command_hidden("pipx", &["list"], &empty_env) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             debug!("pipx list output: {}", stdout);
             if output.status.success() && stdout.to_lowercase().contains("subliminal") {
                 debug!("Subliminal found via pipx list");
-                return true;
+                // pipx list doesn't give a clean version; try to extract it
+                let version = stdout.lines()
+                    .find(|l| l.to_lowercase().contains("subliminal"))
+                    .map(|l| l.trim().to_string());
+                return (true, version);
             }
         }
-        
-        // Then check as Python module with multiple Python commands (for pip installations)
+
+        // 3) pip show -- gives both installed status and version
         for cmd in &["python3", "python", "py"] {
-            if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "show", "subliminal"], &std::collections::HashMap::new()) {
+            if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "show", "subliminal"], &empty_env) {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 debug!("{} -m pip show subliminal output: {}", cmd, stdout);
                 if output.status.success() && stdout.contains("Name: subliminal") {
                     debug!("Subliminal found via pip show using {}", cmd);
-                    return true;
+                    let version = stdout.lines()
+                        .find_map(|line| line.strip_prefix("Version: "))
+                        .map(|ver| format!("subliminal {}", ver.trim()));
+                    return (true, version);
                 }
             }
-            // Also try direct module import
-            if let Ok(output) = Self::run_command_hidden(cmd, &["-c", "import subliminal; print('subliminal available')"], &std::collections::HashMap::new()) {
+        }
+
+        // 4) Direct import -- last resort, no version info
+        for cmd in &["python3", "python", "py"] {
+            if let Ok(output) = Self::run_command_hidden(cmd, &["-c", "import subliminal; print('subliminal available')"], &empty_env) {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 debug!("{} -c import subliminal output: {}", cmd, stdout);
                 if output.status.success() && stdout.contains("subliminal available") {
                     debug!("Subliminal found via direct import using {}", cmd);
-                    return true;
+                    return (true, None);
                 }
             }
         }
+
         debug!("Subliminal not found");
-        false
+        (false, None)
     }
 
-    /// Install Subliminal via pipx (Linux) or pip (Windows)
+    /// Install Subliminal via pipx (Linux) or pip (Windows/macOS)
     pub fn install_subliminal() -> bool {
         #[cfg(windows)]
         {
@@ -150,15 +166,37 @@ impl PythonManager {
             false
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            info!("Installing Subliminal via pip on macOS");
+            let python_commands = [
+                "/opt/homebrew/bin/python3",
+                "/usr/local/bin/python3",
+                "python3",
+                "python",
+            ];
+            for cmd in &python_commands {
+                if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "install", "--user", "subliminal"], &std::collections::HashMap::new()) {
+                    if output.status.success() {
+                        info!("Subliminal installed successfully using {}", cmd);
+                        return true;
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        warn!("Failed to install Subliminal using {}: {}", cmd, stderr);
+                    }
+                }
+            }
+            error!("Failed to install Subliminal with all Python commands on macOS");
+            false
+        }
+        
+        #[cfg(target_os = "linux")]
         {
             info!("Installing Subliminal via pipx on Linux");
             
-            // First, try to install pipx if it's not available
             if let Ok(output) = Self::run_command_hidden("pipx", &["--version"], &std::collections::HashMap::new()) {
                 if !output.status.success() {
                     info!("pipx not found, attempting to install pipx first");
-                    // Try to install pipx using different methods
                     let pipx_install_attempts = [
                         ("python3", vec!["-m", "pip", "install", "--user", "pipx"]),
                         ("python", vec!["-m", "pip", "install", "--user", "pipx"]),
@@ -179,7 +217,6 @@ impl PythonManager {
                 }
             }
             
-            // Now try to install subliminal using pipx
             if let Ok(output) = Self::run_command_hidden("pipx", &["install", "subliminal"], &std::collections::HashMap::new()) {
                 if output.status.success() {
                     info!("Subliminal installed successfully using pipx");
@@ -190,7 +227,6 @@ impl PythonManager {
                 }
             }
             
-            // Fallback to pip install if pipx fails
             info!("pipx installation failed, trying pip install as fallback");
             for cmd in &["python3", "python"] {
                 if let Ok(output) = Self::run_command_hidden(cmd, &["-m", "pip", "install", "--user", "subliminal"], &std::collections::HashMap::new()) {
@@ -299,15 +335,47 @@ impl PythonManager {
             Ok(())
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            // On Linux, Python scripts are typically already in PATH via pip
-            // Just ensure the user's local bin directory is in PATH
+            let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
+            let mut paths_to_add = Vec::new();
+
+            if std::path::Path::new("/opt/homebrew/bin").exists() {
+                paths_to_add.push("/opt/homebrew/bin".to_string());
+            }
+            if std::path::Path::new("/usr/local/bin").exists() {
+                paths_to_add.push("/usr/local/bin".to_string());
+            }
+
+            let py_lib = home_dir.join("Library").join("Python");
+            if py_lib.exists() {
+                if let Ok(entries) = std::fs::read_dir(&py_lib) {
+                    for entry in entries.flatten() {
+                        let bin_path = entry.path().join("bin");
+                        if bin_path.exists() {
+                            paths_to_add.push(bin_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+
+            let current_path = env::var("PATH").unwrap_or_default();
+            for path in paths_to_add {
+                if !current_path.contains(&path) {
+                    let new_path = format!("{}:{}", path, current_path);
+                    env::set_var("PATH", new_path);
+                }
+            }
+
+            Ok(())
+        }
+
+        #[cfg(target_os = "linux")]
+        {
             let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
             let local_bin = home_dir.join(".local").join("bin");
             
             if local_bin.exists() {
-                // Add to current process PATH
                 let current_path = env::var("PATH").unwrap_or_default();
                 if !current_path.contains(local_bin.to_string_lossy().as_ref()) {
                     let new_path = format!("{}:{}", local_bin.display(), current_path);
@@ -352,9 +420,40 @@ impl PythonManager {
             Ok(())
         }
         
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         {
-            // On Linux, reload environment from shell profile
+            let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
+            let mut paths_to_add = Vec::new();
+
+            for path in &["/opt/homebrew/bin", "/usr/local/bin"] {
+                if std::path::Path::new(path).exists() {
+                    paths_to_add.push(path.to_string());
+                }
+            }
+
+            let py_lib = home_dir.join("Library").join("Python");
+            if py_lib.exists() {
+                if let Ok(entries) = std::fs::read_dir(&py_lib) {
+                    for entry in entries.flatten() {
+                        let bin_path = entry.path().join("bin");
+                        if bin_path.exists() {
+                            paths_to_add.push(bin_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+
+            let current_path = env::var("PATH").unwrap_or_default();
+            let mut new_path_parts = paths_to_add;
+            new_path_parts.push(current_path);
+            let new_path = new_path_parts.join(":");
+            env::set_var("PATH", new_path);
+
+            Ok(())
+        }
+
+        #[cfg(target_os = "linux")]
+        {
             let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
             let local_bin = home_dir.join(".local").join("bin");
             
@@ -493,10 +592,9 @@ impl PythonManager {
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         
-        // On Linux, we can't hide the window but we can redirect output
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            // Set environment variables to suppress some output
+            #[cfg(target_os = "linux")]
             command.env("DEBIAN_FRONTEND", "noninteractive");
             command.env("PYTHONUNBUFFERED", "1");
         }
@@ -510,6 +608,31 @@ impl PythonManager {
             return output.status.success();
         }
         false
+    }
+
+    /// Get pipx version string (e.g. "1.2.3"). Linux only.
+    #[cfg(target_os = "linux")]
+    pub fn get_pipx_version() -> Option<String> {
+        let output = Self::run_command_hidden("pipx", &["--version"], &std::collections::HashMap::new()).ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let s = stdout.trim();
+        // pipx --version may output "1.2.3" or "pipx 1.2.3" or "pipx version 1.2.3"
+        let ver = s
+            .strip_prefix("pipx")
+            .map(|t| t.trim().trim_start_matches("version").trim())
+            .unwrap_or(s);
+        if ver.is_empty() || !ver.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            return None;
+        }
+        Some(ver.to_string())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn get_pipx_version() -> Option<String> {
+        None
     }
 
     /// Try to install pipx using common methods

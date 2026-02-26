@@ -45,6 +45,7 @@ pub struct SubtitleDownloader {
     pub python_installed: bool,
     pub python_version: Option<String>,
     pub pipx_installed: bool,
+    pub pipx_version: Option<String>,
     pub subliminal_installed: bool,
     pub subliminal_version: Option<String>,
     pub installing_python: bool,
@@ -66,6 +67,7 @@ pub struct SubtitleDownloader {
     pub videos_missing_subs: SharedPaths,
     pub scanning: bool,
     pub scan_done_receiver: Option<std::sync::mpsc::Receiver<usize>>,
+    pub scan_cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     pub ignored_extra_folders: usize,
 
     // UI status
@@ -85,8 +87,8 @@ pub struct SubtitleDownloader {
     
     // Background installation status checking
     pub background_check_handle: Option<std::thread::JoinHandle<()>>,
-    pub background_check_sender: Option<std::sync::mpsc::Sender<(bool, bool)>>, // (_pipx_available, subliminal_installed)
     pub background_check_receiver: Option<std::sync::mpsc::Receiver<(bool, bool)>>,
+    pub shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
 
     // Version check state
     pub latest_version: Option<String>,
@@ -102,6 +104,7 @@ pub struct SubtitleDownloader {
 pub struct InitCheckResult {
     pub python_version: Option<String>,
     pub pipx_installed: bool,
+    pub pipx_version: Option<String>,
     pub subliminal_installed: bool,
     pub subliminal_version: Option<String>,
 } 

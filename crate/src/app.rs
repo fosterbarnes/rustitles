@@ -35,34 +35,35 @@ impl Default for SubtitleDownloader {
             let python_version = PythonManager::get_version();
             let python_installed = python_version.is_some();
 
-            #[cfg(windows)]
-            let pipx_installed = true;
-            #[cfg(not(windows))]
-            let pipx_installed = if python_installed {
+            // pipx is only used on Linux
+            #[cfg(any(windows, target_os = "macos"))]
+            let (pipx_installed, pipx_version) = (true, None::<String>);
+            #[cfg(target_os = "linux")]
+            let (pipx_installed, pipx_version) = if python_installed {
                 let available = PythonManager::_pipx_available();
-                if !available {
+                let installed = if !available {
                     info!("pipx not found, attempting to install pipx");
                     if PythonManager::try_install_pipx() { PythonManager::_pipx_available() } else { false }
                 } else {
                     available
-                }
+                };
+                let ver = if installed { PythonManager::get_pipx_version() } else { None };
+                (installed, ver)
             } else {
-                false
+                (false, None)
             };
 
             let (subliminal_installed, subliminal_version) = if python_installed && pipx_installed {
-                let installed = PythonManager::is_subliminal_installed();
-                let version = if installed { PythonManager::get_subliminal_version() } else { None };
-                (installed, version)
+                PythonManager::check_subliminal()
             } else {
                 (false, None)
             };
 
             info!("Python installed: {}, version: {:?}", python_installed, python_version);
-            info!("pipx installed: {}", pipx_installed);
+            info!("pipx installed: {}, version: {:?}", pipx_installed, pipx_version);
             info!("Subliminal installed: {}, version: {:?}", subliminal_installed, subliminal_version);
 
-            let _ = init_tx.send(InitCheckResult { python_version, pipx_installed, subliminal_installed, subliminal_version });
+            let _ = init_tx.send(InitCheckResult { python_version, pipx_installed, pipx_version, subliminal_installed, subliminal_version });
         });
 
         // Start version check in background
@@ -102,6 +103,7 @@ impl Default for SubtitleDownloader {
             python_installed: false,
             python_version: None,
             pipx_installed: false,
+            pipx_version: None,
             subliminal_installed: false,
             subliminal_version: None,
             installing_python: false,
@@ -119,6 +121,7 @@ impl Default for SubtitleDownloader {
             videos_missing_subs: Arc::new(Mutex::new(Vec::new())),
             scanning: false,
             scan_done_receiver: None,
+            scan_cancel_flag: Arc::new(AtomicBool::new(false)),
             ignored_extra_folders: 0,
             status: "Checking dependencies...".to_string(),
             pipx_copied: false,
@@ -128,8 +131,8 @@ impl Default for SubtitleDownloader {
             cached_jobs: Vec::new(),
             last_jobs_update: std::time::Instant::now(),
             background_check_handle: None,
-            background_check_sender: None,
             background_check_receiver: None,
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
             latest_version: None,
             version_check_error: None,
             version_checked: false,
@@ -159,8 +162,16 @@ impl SubtitleDownloader {
 
     /// Scan the selected folder for video files and update the missing subtitles list
     pub fn scan_folder(&mut self) {
-        if self.folder_path.is_empty() || self.scanning {
+        if self.folder_path.is_empty() {
             return;
+        }
+
+        // If already scanning, cancel the previous scan first
+        if self.scanning {
+            self.scan_cancel_flag.store(true, Ordering::SeqCst);
+            self.scanning = false;
+            self.scan_done_receiver = None;
+            info!("Previous scan cancelled for rescan");
         }
 
         info!("Starting folder scan: {}", self.folder_path);
@@ -169,6 +180,11 @@ impl SubtitleDownloader {
         }
         self.status = "Scanning...".to_string();
         self.scanning = true;
+
+        // Reset cancel flag for the new scan
+        self.scan_cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&self.scan_cancel_flag);
+
         let (tx, rx) = mpsc::channel();
         self.scan_done_receiver = Some(rx);
 
@@ -180,28 +196,49 @@ impl SubtitleDownloader {
         let ignore_local_extras = self.ignore_local_extras;
         let ignored_folders_count = Arc::new(Mutex::new(0));
 
-        // Clear download jobs when folder changes
+        // Clear previous results and download state
+        {
+            *scanned_videos.lock().unwrap() = Vec::new();
+            *videos_missing_subs.lock().unwrap() = Vec::new();
+        }
         {
             let mut jobs = self.download_jobs.lock().unwrap();
             jobs.clear();
         }
-        self.cached_jobs.clear(); // Also clear cached jobs
+        self.cached_jobs.clear();
+        self.downloads_completed = 0;
+        self.total_downloads = 0;
 
-        // Reset downloading flag when starting new scan
-        self.downloading = false;
-        self.ignored_extra_folders = 0; // Reset ignored folders count
+        // Cancel any active downloads
+        if self.downloading {
+            self.cancel_flag.store(true, Ordering::SeqCst);
+            self.downloading = false;
+            self.is_downloading = false;
+        }
+        self.ignored_extra_folders = 0;
 
         let ignored_folders_count_clone = Arc::clone(&ignored_folders_count);
         thread::spawn(move || {
             let mut found_videos = Vec::new();
             let mut missing_subtitles = Vec::new();
 
-            fn visit_dirs(dir: &Path, videos: &mut Vec<PathBuf>, ignore_extras: bool, ignored_count: &Arc<Mutex<usize>>) {
+            fn visit_dirs(
+                dir: &Path,
+                videos: &mut Vec<PathBuf>,
+                ignore_extras: bool,
+                ignored_count: &Arc<Mutex<usize>>,
+                cancel: &Arc<AtomicBool>,
+            ) -> bool {
+                if cancel.load(Ordering::SeqCst) {
+                    return false;
+                }
                 if let Ok(entries) = dir.read_dir() {
                     for entry in entries.flatten() {
+                        if cancel.load(Ordering::SeqCst) {
+                            return false;
+                        }
                         let path = entry.path();
                         if path.is_dir() {
-                            // Check if this is a local extras folder that should be ignored
                             if ignore_extras {
                                 if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
                                     let extras_folders = [
@@ -213,32 +250,53 @@ impl SubtitleDownloader {
                                         if let Ok(mut count) = ignored_count.lock() {
                                             *count += 1;
                                         }
-                                        continue; // Skip this folder and its contents
+                                        continue;
                                     }
                                 }
                             }
-                            visit_dirs(&path, videos, ignore_extras, ignored_count);
+                            if !visit_dirs(&path, videos, ignore_extras, ignored_count, cancel) {
+                                return false;
+                            }
                         } else if Utils::is_video_file(&path) {
                             videos.push(path);
                         }
                     }
                 }
+                true
             }
 
-            visit_dirs(Path::new(&folder_path), &mut found_videos, ignore_local_extras, &ignored_folders_count_clone);
+            let completed = visit_dirs(
+                Path::new(&folder_path),
+                &mut found_videos,
+                ignore_local_extras,
+                &ignored_folders_count_clone,
+                &cancel_flag,
+            );
+
+            if !completed || cancel_flag.load(Ordering::SeqCst) {
+                info!("Scan cancelled, discarding results");
+                return;
+            }
 
             if overwrite_existing {
-                // If overwrite is enabled, include all videos regardless of existing subtitles
                 missing_subtitles = found_videos.clone();
                 info!("Overwrite mode enabled - including all {} videos", found_videos.len());
             } else {
-                // Only include videos that are missing subtitles
                 for video in &found_videos {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        info!("Scan cancelled during subtitle check, discarding results");
+                        return;
+                    }
                     if SubtitleUtils::video_missing_subtitle(video, &selected_languages) {
                         missing_subtitles.push(video.clone());
                     }
                 }
                 info!("Found {} videos, {} missing subtitles", found_videos.len(), missing_subtitles.len());
+            }
+
+            if cancel_flag.load(Ordering::SeqCst) {
+                info!("Scan cancelled before writing results, discarding");
+                return;
             }
 
             let found_count = found_videos.len();
@@ -253,7 +311,6 @@ impl SubtitleDownloader {
                 info!("Folder scan completed - found {} videos, {} missing subtitles", found_count, missing_count);
             }
             
-            // Send the ignored folders count along with the completion signal
             let ignored_count = if let Ok(count) = ignored_folders_count_clone.lock() {
                 *count
             } else {
@@ -582,6 +639,7 @@ impl SubtitleDownloader {
         self.python_version = result.python_version;
         self.python_installed = self.python_version.is_some();
         self.pipx_installed = result.pipx_installed;
+        self.pipx_version = result.pipx_version;
         self.subliminal_installed = result.subliminal_installed;
         self.subliminal_version = result.subliminal_version;
 
@@ -616,79 +674,73 @@ impl SubtitleDownloader {
 
         // Start background polling thread to pick up later dependency changes
         let (tx, rx) = mpsc::channel();
-        let tx_clone = tx.clone();
+        let bg_shutdown = Arc::clone(&self.shutdown_flag);
         let bg = thread::spawn(move || {
             loop {
-                if tx_clone.send((false, false)).is_err() { return; }
+                if bg_shutdown.load(Ordering::Relaxed) { return; }
 
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 {
                     let sub = PythonManager::is_subliminal_installed();
-                    if tx_clone.send((true, sub)).is_err() { break; }
+                    if tx.send((true, sub)).is_err() { break; }
                     if sub { break; }
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 {
                     let pipx = PythonManager::_pipx_available();
                     let sub = if pipx { PythonManager::is_subliminal_installed() } else { false };
-                    if tx_clone.send((pipx, sub)).is_err() { break; }
+                    if tx.send((pipx, sub)).is_err() { break; }
                     if pipx && sub { break; }
                 }
 
+                // Sleep in short intervals so we notice shutdown quickly
                 for _ in 0..50 {
+                    if bg_shutdown.load(Ordering::Relaxed) { return; }
                     thread::sleep(std::time::Duration::from_millis(100));
-                    if tx_clone.send((false, false)).is_err() { return; }
                 }
             }
         });
         self.background_check_handle = Some(bg);
-        self.background_check_sender = Some(tx);
         self.background_check_receiver = Some(rx);
     }
 
     /// Refresh installation status using background thread results
     pub fn refresh_installation_status(&mut self) {
-        // Collect all available messages first
         let mut last_status = None;
         if let Some(receiver) = &self.background_check_receiver {
             while let Ok(status) = receiver.try_recv() {
-                // Ignore ping messages (false, false) - they're just for shutdown detection
-                if status != (false, false) {
-                    last_status = Some(status);
-                }
+                last_status = Some(status);
             }
         }
         if let Some((_pipx_available, subliminal_installed)) = last_status {
             let _old_pipx = self.pipx_installed;
             let old_subliminal = self.subliminal_installed;
 
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 self.pipx_installed = _pipx_available;
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
-                self.pipx_installed = true; // Not used on Windows
+                self.pipx_installed = true;
             }
 
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
-                // On Windows, just check if subliminal is installed
                 if self.python_installed {
                     self.subliminal_installed = subliminal_installed;
                 }
             }
             
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
-                // On Linux, check if both pipx and subliminal are available
                 if self.python_installed && self.pipx_installed {
                     self.subliminal_installed = subliminal_installed;
                 }
             }
 
             // If pipx became available (Linux only), start installing subliminal automatically
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 if !_old_pipx && self.pipx_installed && !self.subliminal_installed {
                     info!("pipx became available, starting automatic Subliminal installation");
@@ -718,20 +770,20 @@ impl SubtitleDownloader {
             }
             
             // Stop background checking and free resources
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 if self.subliminal_installed {
+                    self.shutdown_flag.store(true, Ordering::Relaxed);
                     self.background_check_handle = None;
-                    self.background_check_sender = None;
                     self.background_check_receiver = None;
                 }
             }
             
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             {
                 if self.pipx_installed && self.subliminal_installed {
+                    self.shutdown_flag.store(true, Ordering::Relaxed);
                     self.background_check_handle = None;
-                    self.background_check_sender = None;
                     self.background_check_receiver = None;
                 }
             }
@@ -839,6 +891,7 @@ impl SubtitleDownloader {
     pub fn is_python_installed(&self) -> bool { self.python_installed }
     pub fn is_pipx_installed(&self) -> bool { self.pipx_installed }
     pub fn get_python_version(&self) -> Option<&String> { self.python_version.as_ref() }
+    pub fn get_pipx_version(&self) -> Option<&String> { self.pipx_version.as_ref() }
     pub fn get_subliminal_version(&self) -> Option<&String> { self.subliminal_version.as_ref() }
     pub fn get_status(&self) -> &str { &self.status }
     pub fn get_folder_path(&self) -> &str { &self.folder_path }
@@ -872,7 +925,7 @@ impl SubtitleDownloader {
     pub fn get_ignored_extra_folders(&self) -> usize { self.ignored_extra_folders }
     pub fn get_concurrent_downloads_mut(&mut self) -> &mut usize { &mut self.concurrent_downloads }
     pub fn get_scan_done_receiver_mut(&mut self) -> &mut Option<Receiver<usize>> { &mut self.scan_done_receiver }
-    pub fn get_background_check_sender(&self) -> Option<&mpsc::Sender<(bool, bool)>> { self.background_check_sender.as_ref() }
+    pub fn get_shutdown_flag(&self) -> &Arc<AtomicBool> { &self.shutdown_flag }
     pub fn get_background_check_handle_mut(&mut self) -> &mut Option<thread::JoinHandle<()>> { &mut self.background_check_handle }
 
     /// Start Python installation in a background thread (Windows only)

@@ -1,31 +1,30 @@
 //! Rustitles - Subtitle Downloader Tool
-//! 
+//!
 //! A desktop application for automatically downloading subtitles for video files.
-//! Built with Rust and egui for cross-platform (Windows & Linux)
+//! Built with Rust and egui for Windows, Linux, and macOS
 
 // Import all modules
+mod app;
 mod config;
 mod data_structures;
-mod logging;
-mod settings;
-mod python_manager;
-mod subtitle_utils;
-mod app;
 mod gui;
 mod helper_functions;
+mod logging;
+mod python_manager;
+mod scan_history;
+mod settings;
+mod subtitle_utils;
 
 // Re-export commonly used items
 pub use config::*;
 pub use data_structures::*;
-pub use logging::*;
-pub use settings::*;
-pub use python_manager::*;
-pub use subtitle_utils::*;
 pub use helper_functions::*;
+pub use logging::*;
+pub use python_manager::*;
+pub use settings::*;
+pub use subtitle_utils::*;
 
 // Only keep actually used imports
-use image;
-use serde_json;
 use crate::logging::LOGGER;
 
 // Third-party crate imports
@@ -35,7 +34,9 @@ use eframe::egui;
 #[cfg(windows)]
 use windows::Win32::Foundation::POINT;
 #[cfg(windows)]
-use windows::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
@@ -45,7 +46,7 @@ fn initialize_app() -> Result<(), Box<dyn std::error::Error>> {
     if let Err(e) = setup_logging() {
         eprintln!("Failed to initialize logging: {}", e);
     }
-    
+
     info!("Starting Rustitles application");
     Ok(())
 }
@@ -54,9 +55,11 @@ fn initialize_app() -> Result<(), Box<dyn std::error::Error>> {
 fn load_app_icon() -> Option<egui::IconData> {
     #[cfg(windows)]
     {
-        if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico")) {
+        if let Ok(image) =
+            image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
+        {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -67,11 +70,13 @@ fn load_app_icon() -> Option<egui::IconData> {
             None
         }
     }
-    
+
     #[cfg(target_os = "macos")]
     {
         // Use rustitles_mac_icon.png on macOS so Dock icon matches the .app bundle icon
-        if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_mac_icon.png")) {
+        if let Ok(image) =
+            image::load_from_memory(include_bytes!("../resources/rustitles_mac_icon.png"))
+        {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];
             Some(egui::IconData {
@@ -79,7 +84,9 @@ fn load_app_icon() -> Option<egui::IconData> {
                 width: size[0],
                 height: size[1],
             })
-        } else if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.png")) {
+        } else if let Ok(image) =
+            image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
+        {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];
             Some(egui::IconData {
@@ -87,7 +94,9 @@ fn load_app_icon() -> Option<egui::IconData> {
                 width: size[0],
                 height: size[1],
             })
-        } else if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico")) {
+        } else if let Ok(image) =
+            image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
+        {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];
             Some(egui::IconData {
@@ -104,7 +113,9 @@ fn load_app_icon() -> Option<egui::IconData> {
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         // Linux: try PNG first, then fallback to ICO
-        if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.png")) {
+        if let Ok(image) =
+            image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
+        {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];
             Some(egui::IconData {
@@ -112,7 +123,9 @@ fn load_app_icon() -> Option<egui::IconData> {
                 width: size[0],
                 height: size[1],
             })
-        } else if let Ok(image) = image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico")) {
+        } else if let Ok(image) =
+            image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
+        {
             let rgba = image.to_rgba8();
             let size = [rgba.width() as u32, rgba.height() as u32];
             Some(egui::IconData {
@@ -127,8 +140,11 @@ fn load_app_icon() -> Option<egui::IconData> {
     }
 }
 
-/// Calculate window position to center on the currently used monitor
+/// Calculate the first-run position on the currently used monitor.
 fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
+    #[cfg(not(windows))]
+    let _ = window_size;
+
     #[cfg(windows)]
     {
         unsafe {
@@ -146,64 +162,75 @@ fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
                     let work_height = (info.rcWork.bottom - info.rcWork.top) as f32;
                     let x = work_left as f32 + (work_width - window_size[0]) / 2.0;
                     let y = work_top as f32 + (work_height - window_size[1]) / 2.0;
-                    egui::Pos2::new(x, y)
-                } else {
-                    egui::Pos2::new(100.0, 100.0)
+                    return egui::Pos2::new(x, y);
                 }
-            } else {
-                egui::Pos2::new(100.0, 100.0)
             }
         }
     }
-    
-    #[cfg(not(windows))]
-    {
-        // On Linux, just center the window on screen
-        // We'll use a simple approach that works with most window managers
-        egui::Pos2::new(100.0, 100.0)
-    }
+
+    egui::Pos2::new(100.0, 100.0)
 }
 
 /// Configure the application window and visuals
 fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions {
     let window_size = WINDOW_SIZE;
-    let center_pos = calculate_window_position(window_size);
+    let initial_position = calculate_window_position(window_size);
 
     let mut viewport_builder = egui::ViewportBuilder::default()
         .with_inner_size(window_size)
-        .with_position(center_pos)
+        .with_position(initial_position)
         .with_decorations(true)
         .with_resizable(true)
         .with_min_inner_size(MIN_WINDOW_SIZE); // Minimum window size to prevent UI elements from disappearing
-    
+
     if let Some(icon) = icon_data {
         viewport_builder = viewport_builder.with_icon(icon);
     }
 
     eframe::NativeOptions {
         viewport: viewport_builder,
+        persist_window: true,
         ..Default::default()
     }
 }
 
-/// Apply Dracula theme
+/// Apply the Rustitles dark desktop theme.
 fn configure_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
-    
-    // Dracula theme accent colors
-    visuals.override_text_color = Some(egui::Color32::from_rgb(248, 248, 242)); // #f8f8f2 (light gray)
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(189, 147, 249); // #bd93f9 (purple)
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(139, 233, 253); // #8be9fd (cyan)
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(68, 71, 90); // #44475a (darker gray)
-    visuals.selection.bg_fill = egui::Color32::from_rgb(189, 147, 249); // #bd93f9 (purple)
-    visuals.hyperlink_color = egui::Color32::from_rgb(139, 233, 253); // #8be9fd (cyan)
-    visuals.warn_fg_color = egui::Color32::from_rgb(255, 184, 108); // #ffb86c (orange)
-    visuals.error_fg_color = egui::Color32::from_rgb(255, 85, 85); // #ff5555 (red)
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(68, 71, 90); // #44475a
-    visuals.widgets.active.fg_stroke.color = egui::Color32::from_rgb(248, 248, 242); // #f8f8f2 (white text on purple)
-    visuals.widgets.hovered.fg_stroke.color = egui::Color32::from_rgb(40, 42, 54); // #282a36 (dark text on cyan)
-    
-    ctx.set_visuals(visuals);
+
+    visuals.override_text_color = Some(egui::Color32::from_rgb(255, 255, 255));
+    visuals.window_fill = egui::Color32::from_rgb(27, 27, 27);
+    visuals.panel_fill = egui::Color32::from_rgb(27, 27, 27);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(82, 62, 110);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(64, 64, 64);
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(45, 45, 45);
+    visuals.selection.bg_fill = egui::Color32::from_rgb(77, 60, 100);
+    visuals.hyperlink_color = egui::Color32::from_rgb(147, 115, 192);
+    visuals.warn_fg_color = egui::Color32::from_rgb(230, 194, 0);
+    visuals.error_fg_color = egui::Color32::from_rgb(244, 67, 54);
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(45, 45, 45);
+    visuals.widgets.active.fg_stroke.color = egui::Color32::from_rgb(255, 255, 255);
+
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, visuals);
+}
+
+/// Use embedded Inter for UI text on every platform.
+fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../resources/fonts/Inter-Regular.ttf"
+        ))),
+    );
+    if let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        proportional.insert(0, "Inter".to_owned());
+    }
+    if let Some(monospace) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        monospace.push("Inter".to_owned());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// Cleanup resources when the application exits
@@ -216,45 +243,24 @@ fn cleanup_on_exit() {
     }
 }
 
-// =============================================================================
-// ERROR HANDLING
-// =============================================================================
-
-/// Custom error type for application-specific errors
-#[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
-enum AppError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    
-    #[error("JSON serialization error: {0}")]
-    Json(#[from] serde_json::Error),
-    
-    #[error("Network error: {0}")]
-    Network(#[from] reqwest::Error),
-    
-
-}
-
-// =============================================================================
-// VERSION CONSTANT & VERSION CHECK STATE
-// =============================================================================
-
 fn main() {
     // Initialize the application
     if let Err(e) = initialize_app() {
         eprintln!("Failed to initialize application: {}", e);
         return;
     }
-    
+
     // Load application icon
     let icon_data = load_app_icon();
-    
+
     // Configure window
     let native_options = configure_window(icon_data);
-    
-    info!("Initializing GUI with window size: {}x{}", WINDOW_SIZE[0], WINDOW_SIZE[1]);
-    
+
+    info!(
+        "Initializing GUI with window size: {}x{}",
+        WINDOW_SIZE[0], WINDOW_SIZE[1]
+    );
+
     // Run the application
     let result = eframe::run_native(
         "Rustitles",
@@ -262,14 +268,17 @@ fn main() {
         Box::new(|cc| {
             // Configure visuals
             configure_visuals(&cc.egui_ctx);
-            
+            configure_fonts(&cc.egui_ctx);
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             info!("GUI initialized successfully");
-            Box::new(SubtitleDownloader::default())
+            Ok(Box::new(SubtitleDownloader::default()))
         }),
     );
-    
+
     // Cleanup on exit
     cleanup_on_exit();
-    
-    result.expect("Failed to start eframe");
+
+    if let Err(error) = result {
+        eprintln!("Failed to start eframe: {error}");
+    }
 }

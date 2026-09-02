@@ -1,10 +1,10 @@
 //! Common utility functions and validation helpers
-//! 
+//!
 //! This module provides utility functions for file operations, string formatting,
 //! progress tracking, and input validation used throughout the application.
 
+use crate::config::{EXTRAS_FOLDER_NAMES, MAX_CONCURRENT_DOWNLOADS, VIDEO_EXTENSIONS};
 use std::path::Path;
-use crate::config::{VIDEO_EXTENSIONS, MAX_CONCURRENT_DOWNLOADS};
 
 /// Common utility functions used throughout the application
 pub struct Utils;
@@ -20,10 +20,13 @@ impl Utils {
 
     /// Truncate a string to a maximum length, adding ellipsis if needed
     pub fn truncate_string(s: &str, max_len: usize) -> String {
-        if s.len() <= max_len {
+        if s.chars().count() <= max_len {
             s.to_string()
+        } else if max_len <= 3 {
+            s.chars().take(max_len).collect()
         } else {
-            format!("{}...", &s[..max_len - 3])
+            let prefix: String = s.chars().take(max_len - 3).collect();
+            format!("{prefix}...")
         }
     }
 
@@ -31,8 +34,18 @@ impl Utils {
     pub fn is_video_file(path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| VIDEO_EXTENSIONS.iter().any(|&v| v.eq_ignore_ascii_case(ext)))
-            .unwrap_or(false)
+            .is_some_and(|ext| {
+                VIDEO_EXTENSIONS
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(ext))
+            })
+    }
+
+    /// True when a directory name is a Plex local-extras folder (case-insensitive)
+    pub fn is_plex_extras_folder(name: &str) -> bool {
+        EXTRAS_FOLDER_NAMES
+            .iter()
+            .any(|folder| folder.eq_ignore_ascii_case(name))
     }
 
     /// Create a progress percentage string
@@ -50,13 +63,16 @@ impl Utils {
         #[cfg(windows)]
         {
             let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-            let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
+            let exe_dir = exe_path
+                .parent()
+                .ok_or("Failed to get executable directory")?;
             Ok(exe_dir.join("rustitles_log.txt"))
         }
         #[cfg(not(windows))]
         {
-            if let Ok(xdg_dirs) = xdg::BaseDirectories::new() {
-                Ok(xdg_dirs.get_cache_home().join("rustitles").join("rustitles.log"))
+            let xdg_dirs = xdg::BaseDirectories::new();
+            if let Some(cache_dir) = xdg_dirs.get_cache_home() {
+                Ok(cache_dir.join("rustitles").join("rustitles.log"))
             } else {
                 let home_dir = dirs::home_dir().ok_or("Failed to get home directory")?;
                 Ok(home_dir.join(".rustitles").join("rustitles.log"))
@@ -88,7 +104,11 @@ impl Utils {
         }
         #[cfg(target_os = "linux")]
         {
-            let canonical = path.parent().ok_or("No parent folder")?.canonicalize().map_err(|e| e.to_string())?;
+            let canonical = path
+                .parent()
+                .ok_or("No parent folder")?
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
             let status = std::process::Command::new("xdg-open")
                 .arg(canonical)
                 .status()
@@ -126,7 +146,7 @@ impl Validation {
         if path.is_empty() {
             return false;
         }
-        
+
         let path = Path::new(path);
         path.exists() && path.is_dir()
     }
@@ -135,4 +155,34 @@ impl Validation {
     pub fn is_valid_concurrent_downloads(value: usize) -> bool {
         value > 0 && value <= MAX_CONCURRENT_DOWNLOADS
     }
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Utils;
+    use std::path::Path;
+
+    #[test]
+    fn truncate_string_respects_character_boundaries() {
+        assert_eq!(Utils::truncate_string("字幕文件名称", 5), "字幕...");
+        assert_eq!(Utils::truncate_string("abcdef", 3), "abc");
+        assert_eq!(Utils::truncate_string("abcdef", 0), "");
+    }
+
+    #[test]
+    fn is_video_file_accepts_mkv_and_rejects_m4a() {
+        assert!(Utils::is_video_file(Path::new("show.mkv")));
+        assert!(Utils::is_video_file(Path::new("SHOW.MKV")));
+        assert!(!Utils::is_video_file(Path::new("track.m4a")));
+        assert!(!Utils::is_video_file(Path::new("audiobook.m4b")));
+        assert!(!Utils::is_video_file(Path::new("ringtone.m4r")));
+    }
+
+    #[test]
+    fn plex_extras_folder_match_is_case_insensitive() {
+        assert!(Utils::is_plex_extras_folder("Behind The Scenes"));
+        assert!(Utils::is_plex_extras_folder("behind the scenes"));
+        assert!(Utils::is_plex_extras_folder("FEATURETTES"));
+        assert!(!Utils::is_plex_extras_folder("Season 01"));
+    }
+}

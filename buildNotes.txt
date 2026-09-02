@@ -1,0 +1,18 @@
+2.4.0 Update
+
+- Improve subtitle matching by using multiple providers and matching refiners.
+- Optional minimum subtitle match score.
+- Added Serbian language support and clearer multi-language embedded-subtitle results.
+- Improve subtitle discovery for uppercase extensions and common caption markers.
+- Add clearer dependency status.
+- Update lots of dependencies
+- Improve download progress, cancellation, rescanning, and failure reporting.
+- Remember successfully scanned videos and add Skip scanned media option to avoid re-downloading.
+- Back up existing sidecar subtitles to numbered .bak files before overwrite.
+- Ignore Plex local-extras folders (Behind The Scenes, Deleted Scenes, Featurettes, etc) with a toggle.
+- Detect FFmpeg and Homebrew status and show copyable install commands on Linux and macOS.
+- Add animated startup splash, larger default window, and refreshed icon and branding.
+- Overhaul packaging: unified .scripts builds, native deb and AppImage via cargo-deb, and optimized release profile (LTO, strip).
+- Faster and more reliable scanning: parallel directory walk, cached folder listings, and case-insensitive extension lookup.
+- Harden Subliminal runs: streaming output, 3 minute inactivity timeout, capped logs, and never pass --debug to avoid leaking tokens.
+- Rewrite downloads table with Skipped state, richer failure messages, and better rescan after cancel.

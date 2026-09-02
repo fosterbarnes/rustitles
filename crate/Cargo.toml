@@ -1,37 +1,46 @@
 [package]
 name = "rustitles"
-version = "2.3.0"
+version = "2.4.0"
 edition = "2021"
 build = "build.rs"
 
 [dependencies]
-eframe = "0.27"
-egui_extras = "0.27"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
-rfd = "0.11.4"
-image = "0.24"
-log = "0.4"
-env_logger = "0.11"
-chrono = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-dirs = "5.0"
-xdg = "2.4"
-once_cell = "1.19"
+eframe = { version = "0.36.1", features = ["persistence"] }
+egui_extras = { version = "0.36.1", features = ["image", "svg"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "native-tls", "charset", "http2", "system-proxy"] }
+rfd = "0.17.2"
+image = "0.25.10"
+log = "0.4.33"
+env_logger = "0.11.11"
+chrono = "0.4.45"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+dirs = "6.0.0"
+xdg = "3.0.0"
+once_cell = "1.21.4"
+jwalk = "0.8"
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.52.0"
-windows = { version = "0.56.0", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Foundation", "Win32_Graphics_Gdi"] }
+winreg = "0.56.0"
+windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(windows)'.build-dependencies]
-winres = "0.1"
-embed-resource = "3.0"
+embed-resource = "3.0.11"
 
-[package.metadata.winres]
-windows_subsystem = "windows"
+[package.metadata.deb]
+maintainer = "Foster Barnes"
+section = "utils"
+priority = "optional"
+depends = "$auto, python3, pipx, ffmpeg"
+extended-description = "A desktop application for automatically downloading subtitles for video files."
+assets = [
+    ["target/release/rustitles", "usr/bin/rustitles", "755"],
+    ["resources/rustitles.desktop", "usr/share/applications/rustitles.desktop", "644"],
+    ["resources/rustitles_icon_256.png", "usr/share/icons/hicolor/256x256/apps/rustitles.png", "644"],
+]
 
-# Set binary name to 'rustitles_linux' on Linux, 'rustitles' elsewhere
+# Keep the binary name stable across platforms.
 [[bin]]
 name = "rustitles"
 path = "src/main.rs"
+

@@ -1,12 +1,14 @@
 target/
+.installer/Output/
 rustitles_log.txt
 rustitles_settings.json
-AppDir
-appimagetool-x86_64.AppImage
-linuxdeploy-x86_64.AppImage
-AppImageTool
 System Volume Information
 *.code-workspace
 *.lock
+!Cargo.lock
 *.lockfile
-*.dmg
+.agent-plans/
+*.md
+.config/
+.DS_Store
+publish/

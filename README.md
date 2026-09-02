@@ -77,11 +77,12 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   </tbody>
 </table>
 
-Or install the `.deb` directly from the terminal:
+Or install the `.deb` directly from the terminal. This command will also automatically launch it after installing:
 
 ```bash
 wget https://github.com/fosterbarnes/rustitles/releases/latest/download/rustitles.deb
 sudo apt install ./rustitles.deb
+rustitles
 ```
 
 <!-- End Quick Reference -->

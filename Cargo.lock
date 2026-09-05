@@ -4062,6 +4062,8 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml_edit",
  "windows",
  "winreg 0.56.0",
  "xdg",
@@ -4753,6 +4755,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

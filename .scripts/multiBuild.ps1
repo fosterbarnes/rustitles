@@ -132,16 +132,18 @@ try {
         '-NoLogo'
         '-NoProfile'
         '-File'
-        (Join-Path $PSScriptRoot 'copyToMac.ps1')
-    ) 'copyToMac.ps1'
+        (Join-Path $PSScriptRoot 'copyTo.ps1')
+        '-Mac'
+    ) 'copyTo.ps1 -Mac'
 
     Write-Host 'Copying source to Windows ARM host...'
     runNativeCommand pwsh @(
         '-NoLogo'
         '-NoProfile'
         '-File'
-        (Join-Path $PSScriptRoot 'copyToWin11Arm.ps1')
-    ) 'copyToWin11Arm.ps1'
+        (Join-Path $PSScriptRoot 'copyTo.ps1')
+        '-Win11Arm'
+    ) 'copyTo.ps1 -Win11Arm'
 
     ensureDebianVmReady
     Write-Host 'Copying source to Debian host...'
@@ -149,8 +151,9 @@ try {
         '-NoLogo'
         '-NoProfile'
         '-File'
-        (Join-Path $PSScriptRoot 'copyToDebian.ps1')
-    ) 'copyToDebian.ps1'
+        (Join-Path $PSScriptRoot 'copyTo.ps1')
+        '-Debian'
+    ) 'copyTo.ps1 -Debian'
 
     $macRepoLiteral = quotePosixLiteral $macRepo
     $macSteps = @(

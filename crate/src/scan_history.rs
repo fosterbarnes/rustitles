@@ -1,4 +1,4 @@
-//! Persistent record of videos that already had a successful Subliminal download.
+//! Persistent record of successful downloads.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -95,13 +95,7 @@ impl ScanHistory {
             Self::get_path().map_err(|e| format!("Failed to get scan history path: {}", e))?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize scan history: {}", e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json)
-            .map_err(|e| format!("Failed to write scan history tmp: {}", e))?;
-        if let Ok(f) = std::fs::File::open(&tmp) {
-            let _ = f.sync_all();
-        }
-        std::fs::rename(&tmp, &path)
+        crate::helper_functions::Utils::write_atomic(&path, json.as_bytes())
             .map_err(|e| format!("Failed to commit scan history: {}", e))?;
         Ok(())
     }
@@ -158,7 +152,7 @@ impl ScanHistory {
         let Some(record) = self.records.get(&key) else {
             return false;
         };
-        // Cheap check: size + mtime without opening handle for file_id on Windows
+        // Check cheap fields before the full identity.
         let Ok(meta) = std::fs::metadata(path) else {
             return false;
         };
@@ -177,7 +171,7 @@ impl ScanHistory {
         {
             return false;
         }
-        // Full identity only after cheap fields match
+        // Check the full identity after the cheap fields match.
         let Some((_, _, _, file_id)) = Self::precise_file_identity(path) else {
             return false;
         };
@@ -201,16 +195,12 @@ impl ScanHistory {
         subtitle_paths: &[PathBuf],
         requested: &[String],
     ) -> Vec<String> {
-        let Some(stem) = video_path.file_stem().and_then(|s| s.to_str()) else {
-            return Vec::new();
-        };
         requested
             .iter()
             .filter(|lang| {
-                let expected = format!("{}.{}", stem, lang);
                 subtitle_paths
                     .iter()
-                    .any(|path| sidecar_stem_matches(path, &expected))
+                    .any(|path| SubtitleUtils::matches_language(video_path, path, lang))
             })
             .cloned()
             .collect()
@@ -228,20 +218,19 @@ impl ScanHistory {
             path.file_stem()
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.eq_ignore_ascii_case(stem))
-                && SubtitleUtils::is_hearing_impaired_path(path)
+                && SubtitleUtils::is_hearing_impaired_path(video_path, path)
         });
 
         requested
             .iter()
             .filter(|lang| {
-                let expected = format!("{}.{}", stem, lang);
                 let matching = subtitle_paths
                     .iter()
-                    .filter(|path| sidecar_stem_matches(path, &expected));
+                    .filter(|path| SubtitleUtils::matches_language(video_path, path, lang));
                 let mut has_regular = false;
                 let mut has_hearing_impaired = generic_is_hearing_impaired;
                 for path in matching {
-                    if SubtitleUtils::is_hearing_impaired_path(path) {
+                    if SubtitleUtils::is_hearing_impaired_path(video_path, path) {
                         has_hearing_impaired = true;
                     } else {
                         has_regular = true;
@@ -385,27 +374,6 @@ fn file_id(_path: &Path, meta: &std::fs::Metadata) -> Option<u128> {
 #[cfg(not(any(unix, windows)))]
 fn file_id(_path: &Path, _meta: &std::fs::Metadata) -> Option<u128> {
     None
-}
-
-fn dotted_stem_prefix(value: &str, stem: &str) -> bool {
-    let prefix_len = stem.len();
-    if value.len() <= prefix_len + 1 {
-        return false;
-    }
-    if !value.is_char_boundary(prefix_len) {
-        return false;
-    }
-    if value.as_bytes().get(prefix_len) != Some(&b'.') {
-        return false;
-    }
-    value[..prefix_len].eq_ignore_ascii_case(stem)
-}
-
-fn sidecar_stem_matches(path: &Path, expected_stem: &str) -> bool {
-    let Some(value) = path.file_stem().and_then(|value| value.to_str()) else {
-        return false;
-    };
-    value.eq_ignore_ascii_case(expected_stem) || dotted_stem_prefix(value, expected_stem)
 }
 
 #[cfg(test)]

@@ -1,7 +1,4 @@
-//! Rustitles - Subtitle Downloader Library
-//!
-//! This library provides the core functionality for downloading subtitles
-//! for video files using the Subliminal Python package.
+//! Rustitles subtitle downloader library.
 
 pub mod app;
 pub mod config;
@@ -14,7 +11,7 @@ pub mod scan_history;
 pub mod settings;
 pub mod subtitle_utils;
 
-// Re-export commonly used items
+// Re-export shared items
 pub use config::*;
 pub use data_structures::*;
 pub use helper_functions::*;

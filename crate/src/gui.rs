@@ -1,6 +1,4 @@
-//! GUI rendering components for the Rustitles subtitle downloader
-//!
-//! This module contains all the UI rendering methods and components.
+//! GUI rendering components.
 
 #[cfg(target_os = "linux")]
 use crate::python_manager::PythonManager;
@@ -17,9 +15,9 @@ use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use rfd::FileDialog;
 
-/// Pale yellow for donation link and dependency version readouts in the header.
+/// Donation and dependency text color.
 const DEPS_YELLOW: egui::Color32 = egui::Color32::from_rgb(247, 233, 181);
-/// Header subtitle segment ("Subtitle Downloader Tool").
+/// Header subtitle color.
 const TITLE_SUBTITLE: egui::Color32 = egui::Color32::from_rgb(0xAC, 0x98, 0xC7);
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -115,8 +113,7 @@ fn sample_cubic(
     }
 }
 
-/// Right-edge outline of the icon rounded-rect, shifted left by `remaining`.
-/// Matches the SVG outer path so the wipe lands on the real corner.
+/// Build the icon wipe curve.
 fn icon_wipe_curve(icon_rect: egui::Rect, remaining: f32) -> Vec<egui::Pos2> {
     let shift = -remaining;
     let map = |x: f32, y: f32| {
@@ -148,8 +145,7 @@ fn icon_wipe_curve(icon_rect: egui::Rect, remaining: f32) -> Vec<egui::Pos2> {
     let br6 = map(688.91, 670.49);
     sample_cubic(&mut pts, br0, br1, br2, br3, steps);
     sample_cubic(&mut pts, br3, br4, br5, br6, steps);
-    // Pad past the rasterized SVG by ~2px so anti-aliased edge pixels
-    // (the 1px purple hairline at the bottom) are covered by the wipe.
+    // Cover anti-aliased edge pixels.
     const AA_PAD: f32 = 2.0;
     if let Some(first) = pts.first().copied() {
         pts.insert(0, egui::pos2(first.x, icon_rect.min.y - AA_PAD));
@@ -187,11 +183,10 @@ fn fill_right_of_curve(
 }
 
 impl SubtitleDownloader {
-    /// Render the application header
+    /// Render the application header.
     pub fn render_header(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            // Title on the left as a clickable link
             let github_url = "https://github.com/fosterbarnes/rustitles";
             let title_main = format!("Rustitles v{} ", APP_VERSION);
             let title_main_rich = egui::RichText::new(title_main)
@@ -221,9 +216,7 @@ impl SubtitleDownloader {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
 
-            // Add space to push donation link to the right
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Only show donation link when both Python and Subliminal are installed
                 if self.dependencies_ready() {
                     let donation_url = "https://coff.ee/fosterbarnes";
                     let donation_text = "coff.ee/fosterbarnes";
@@ -234,7 +227,6 @@ impl SubtitleDownloader {
                         donation_url,
                     );
 
-                    // Set cursor icon on hover
                     if link_response.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
@@ -244,7 +236,7 @@ impl SubtitleDownloader {
         ui.add_space(5.0);
     }
 
-    /// Render installation wait screen - icon wipes left->right, then text fades in
+    /// Render the installation screen.
     pub fn render_installation_wait(&self, ui: &mut egui::Ui, fade_out: bool) {
         const ICON_BYTES: &[u8] = include_bytes!("../../.res/gui/loadingIcon.svg");
         const TEXT_BYTES: &[u8] = include_bytes!("../../.res/gui/loadingText.svg");
@@ -253,7 +245,7 @@ impl SubtitleDownloader {
         let text_delay = 1.38_f32;
         let text_duration = 1.08_f32;
         let raw_icon = (time / icon_duration).clamp(0.0, 1.0);
-        // mild ease-out (1.5), closer to linear than the old cubic
+        // Use a mild ease-out.
         let icon_progress = 1.0 - (1.0 - raw_icon).powf(1.5);
         let text_alpha = ((time - text_delay) / text_duration).clamp(0.0, 1.0);
         let out_alpha = if fade_out {
@@ -267,10 +259,8 @@ impl SubtitleDownloader {
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
 
-        // center the whole icon+text block in the startup window (1000x700)
         let avail = ui.max_rect();
         let center = avail.center();
-        // sizes matching the reference image - icon ~square, text ~6.7:1
         let icon_size = egui::vec2(220.0, 220.0);
         let text_size = egui::vec2(320.0, 48.0);
         let gap = 32.0;
@@ -291,7 +281,6 @@ impl SubtitleDownloader {
             .tint(egui::Color32::from_white_alpha((out_alpha * 255.0) as u8));
         icon_image.paint_at(ui, icon_rect);
 
-        // wipe: SVG outer rounded-rect profile, translated (no shrinking radius)
         if icon_progress < 1.0 {
             let remaining = icon_rect.width() * (1.0 - icon_progress);
             if remaining > 0.35 {
@@ -321,7 +310,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render Python installation status
+    /// Render Python installation status.
     pub fn render_python_status(&mut self, ui: &mut egui::Ui) {
         if self.is_python_installed() {
             let raw = self.get_python_version().cloned().unwrap_or_default();
@@ -366,7 +355,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render pipx installation status on Linux and macOS.
+    /// Render pipx installation status.
     pub fn render_pipx_status(&mut self, _ui: &mut egui::Ui) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
@@ -394,8 +383,13 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render Subliminal installation status
+    /// Render Subliminal installation status.
     pub fn render_subliminal_status(&mut self, ui: &mut egui::Ui) {
+        if !self.subliminal_installed && self.subliminal_version.is_some() {
+            ui.label(
+                "Subliminal 2.4.0 or newer is required. Upgrade your Subliminal installation.",
+            );
+        }
         if self.is_python_installed() {
             #[cfg(target_os = "linux")]
             {
@@ -467,7 +461,6 @@ impl SubtitleDownloader {
                 render_dependency_command(ui, "Install Subliminal:", "pipx install subliminal");
             }
         }
-        // Version check warning
         if self.is_version_checked() {
             if let Some(latest) = self.get_latest_version() {
                 if Self::is_outdated(APP_VERSION, latest) {
@@ -506,7 +499,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render FFmpeg installation status on Unix platforms.
+    /// Render FFmpeg installation status.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn render_ffmpeg_status(&mut self, ui: &mut egui::Ui) {
         #[cfg(target_os = "linux")]
@@ -542,14 +535,12 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render language selection interface
+    /// Render language selection.
     pub fn render_language_selection(&mut self, ui: &mut egui::Ui) {
         const LANGUAGE_LIST: &[(&str, &str)] = &[
-            // English and variants at the top
             ("en", "English"),
             ("en-gb", "English (UK)"),
             ("en-us", "English (US)"),
-            // All other languages sorted alphabetically
             ("af", "Afrikaans"),
             ("am", "Amharic"),
             ("ar", "Arabic"),
@@ -625,7 +616,6 @@ impl SubtitleDownloader {
         ];
 
         ui.horizontal(|ui| {
-            // Button that looks like ComboBox (no dropdown arrow)
             let selected_languages = self.get_selected_languages_mut();
             let selected_text = if selected_languages.is_empty() {
                 "Select Languages".to_string()
@@ -644,17 +634,16 @@ impl SubtitleDownloader {
             let force_checkbox_response = ui.checkbox(force_download, "Ignore Embedded Subtitles");
             if force_checkbox_response.changed() {
                 info!("(Ignore Embedded Subtitles) changed to: {}", *force_download);
-                self.set_keep_dropdown_open(false); // Close dropdown when checkbox is clicked
-                self.save_current_settings(); // Save settings when changed
+                self.set_keep_dropdown_open(false);
+                self.save_current_settings();
             }
             ui.add_space(0.0);
             let overwrite_existing = self.get_overwrite_existing_mut();
             let overwrite_checkbox_response = ui.checkbox(overwrite_existing, "Overwrite Existing Subtitles");
             if overwrite_checkbox_response.changed() {
                 info!("(Overwrite Existing Subtitles) changed to: {}", *overwrite_existing);
-                self.set_keep_dropdown_open(false); // Close dropdown when checkbox is clicked
-                self.save_current_settings(); // Save settings when changed
-                // Re-scan for missing subtitles when overwrite option changes
+                self.set_keep_dropdown_open(false);
+                self.save_current_settings();
                 if !self.get_folder_path().is_empty() {
                     self.scan_folder();
                 }
@@ -668,9 +657,8 @@ impl SubtitleDownloader {
                 });
             if ignore_extras_checkbox_response.changed() {
                 info!("(Ignore Local Extras) changed to: {}", *ignore_local_extras);
-                self.set_keep_dropdown_open(false); // Close dropdown when checkbox is clicked
-                self.save_current_settings(); // Save settings when changed
-                // Re-scan for missing subtitles when ignore extras option changes
+                self.set_keep_dropdown_open(false);
+                self.save_current_settings();
                 if !self.get_folder_path().is_empty() {
                     self.scan_folder();
                 }
@@ -692,7 +680,6 @@ impl SubtitleDownloader {
             }
         });
 
-        // Simple popup that shows when button is clicked
         if self.get_keep_dropdown_open() {
             ui.add_space(5.0);
             ui.group(|ui| {
@@ -701,7 +688,7 @@ impl SubtitleDownloader {
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
-                        ui.set_width(ui.available_width()); // Make scrollbar flush right
+                        ui.set_width(ui.available_width());
                         for &(code, name) in LANGUAGE_LIST {
                             let selected_languages = self.get_selected_languages_mut();
                             let mut selected =
@@ -716,7 +703,7 @@ impl SubtitleDownloader {
                                     debug!("Language deselected: {}", code);
                                 }
 
-                                self.save_current_settings(); // Save settings when languages change
+                                self.save_current_settings();
                             }
                         }
                     });
@@ -724,7 +711,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render Subliminal provider, matching, and subtitle-type settings
+    /// Render matching options.
     pub fn render_matching_options(&mut self, ui: &mut egui::Ui) {
         const PROVIDERS: &[(&str, &str)] = &[
             ("addic7ed", "Addic7ed"),
@@ -877,7 +864,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render concurrent downloads setting
+    /// Render concurrent download settings.
     pub fn render_concurrent_downloads(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Concurrent Downloads:").color(egui::Color32::WHITE));
@@ -896,20 +883,20 @@ impl SubtitleDownloader {
                             "Concurrent downloads changed from {} to {}",
                             old_value, concurrent_downloads
                         );
-                        self.save_current_settings(); // Save settings when changed
+                        self.save_current_settings();
                     } else {
                         warn!("Invalid concurrent downloads value: {}", value);
                     }
                 }
-                self.set_keep_dropdown_open(false); // Close dropdown when text field is changed
+                self.set_keep_dropdown_open(false);
             }
             if text_response.gained_focus() {
-                self.set_keep_dropdown_open(false); // Close dropdown when text field gains focus
+                self.set_keep_dropdown_open(false);
             }
         });
     }
 
-    /// Render folder selection interface
+    /// Render folder selection.
     pub fn render_folder_selection(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Folder to scan:").color(egui::Color32::WHITE));
@@ -976,10 +963,9 @@ impl SubtitleDownloader {
         });
     }
 
-    /// Render scan results summary
+    /// Render scan results.
     pub fn render_scan_results(&self, ui: &mut egui::Ui) {
         if !self.get_folder_path().is_empty() {
-            // Take quick snapshots to minimize lock time
             let scanned_count = {
                 if let Ok(videos) = self.scanned_videos.lock() {
                     videos.len()
@@ -1005,7 +991,6 @@ impl SubtitleDownloader {
                     ui.label(format!("Missing subtitles: {}", missing_count));
                 }
 
-                // Show ignored extra folders count if the feature is enabled and folders were ignored
                 if self.get_ignore_local_extras() && self.get_ignored_extra_folders() > 0 {
                     ui.add_space(5.0);
                     ui.label("-");
@@ -1028,7 +1013,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Render download jobs status as a data grid
+    /// Render download job status.
     pub fn render_download_jobs(&mut self, ui: &mut egui::Ui) {
         self.update_cached_jobs();
 
@@ -1255,26 +1240,21 @@ impl SubtitleDownloader {
             });
     }
 
-    /// Render status with optional spinning indicator or check mark
+    /// Render download status.
     pub fn render_status(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            // Show spinning indicator when downloading, check mark when complete
             if self.is_downloading() {
                 let time = ui.ctx().input(|i| i.time) as f32;
-                // Use a constant rotation speed (2 radians per second) for smooth animation
-                let rotation_speed = 2.0; // radians per second
+                let rotation_speed = 2.0;
                 let angle = (time * rotation_speed) % (2.0 * std::f32::consts::PI);
 
-                // Draw spinning circle
                 let center = ui.cursor().min + egui::vec2(8.0, 8.0);
                 let radius = 6.0;
                 let painter = ui.painter();
 
-                // Draw the spinning arc using circle segments
                 let start_angle = angle;
-                let end_angle = angle + std::f32::consts::PI * 1.5; // 3/4 of a circle
+                let end_angle = angle + std::f32::consts::PI * 1.5;
 
-                // Draw arc using multiple line segments
                 let segments = 16;
                 let angle_step = (end_angle - start_angle) / segments as f32;
 
@@ -1291,11 +1271,10 @@ impl SubtitleDownloader {
                     );
                 }
 
-                ui.add_space(20.0); // Space between spinner and text
+                ui.add_space(20.0);
             } else if self.get_total_downloads() > 0
                 && self.get_downloads_completed() == self.get_total_downloads()
             {
-                // Check if all downloads failed or all succeeded
                 let cached_jobs = self.get_cached_jobs();
                 let all_failed = cached_jobs
                     .iter()
@@ -1312,46 +1291,37 @@ impl SubtitleDownloader {
                 let stroke_width: f32 = 2.0;
 
                 if all_failed {
-                    // Show red X when all downloads failed
-                    let x_color = egui::Color32::from_rgb(244, 67, 54); // Red color
+                    let x_color = egui::Color32::from_rgb(244, 67, 54);
 
-                    // First line of X (top-left to bottom-right)
                     let p1 = center + egui::vec2(-4.0, -4.0);
                     let p2 = center + egui::vec2(4.0, 4.0);
                     painter.line_segment([p1, p2], egui::Stroke::new(stroke_width, x_color));
 
-                    // Second line of X (top-right to bottom-left)
                     let p3 = center + egui::vec2(4.0, -4.0);
                     let p4 = center + egui::vec2(-4.0, 4.0);
                     painter.line_segment([p3, p4], egui::Stroke::new(stroke_width, x_color));
                 } else if all_succeeded {
-                    // Show check mark when all downloads succeeded
-                    let check_color = egui::Color32::from_rgb(76, 175, 80); // Green color
+                    let check_color = egui::Color32::from_rgb(76, 175, 80);
 
-                    // First line of check mark (top-left to middle)
                     let p1 = center + egui::vec2(-4.0, 0.0);
                     let p2 = center + egui::vec2(-1.0, 3.0);
                     painter.line_segment([p1, p2], egui::Stroke::new(stroke_width, check_color));
 
-                    // Second line of check mark (middle to bottom-right)
                     let p3 = center + egui::vec2(-1.0, 3.0);
                     let p4 = center + egui::vec2(4.0, -2.0);
                     painter.line_segment([p3, p4], egui::Stroke::new(stroke_width, check_color));
                 }
-                // If mixed results (some succeeded, some failed), show no icon
-
-                ui.add_space(20.0); // Space between icon and text
+                ui.add_space(20.0);
             }
 
             ui.label(&self.status);
         });
     }
 
-    /// Render progress bar
+    /// Render the progress bar.
     pub fn render_progress_bar(&self, ui: &mut egui::Ui) {
         let completed_count = self.get_downloads_completed();
         let total = self.get_total_downloads();
-        // Show progress bar only when downloads are active or complete
         if total > 0 {
             ui.add_space(10.0);
             let progress_text = format!(
@@ -1362,13 +1332,12 @@ impl SubtitleDownloader {
             );
             ui.label(progress_text);
         }
-        // Place the progress bar here, outside the ScrollArea. always fit the window
         if total > 0 {
             let progress = completed_count as f32 / total as f32;
             let window_width = ui.available_width();
             let progress_bar = egui::ProgressBar::new(progress)
                 .show_percentage()
-                .fill(egui::Color32::from_rgb(118, 94, 152)) // #765E98
+                .fill(egui::Color32::from_rgb(118, 94, 152))
                 .corner_radius(egui::CornerRadius::same(3))
                 .desired_width(window_width - 18.0);
             ui.add(progress_bar);
@@ -1379,7 +1348,6 @@ impl SubtitleDownloader {
 impl eframe::App for SubtitleDownloader {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // Scroll bar: fixed size, no expand-on-hover
         ctx.style_mut_of(egui::Theme::Dark, |style| {
             style.spacing.scroll.floating = false;
             style.spacing.scroll.bar_width = 8.0;
@@ -1445,15 +1413,13 @@ impl eframe::App for SubtitleDownloader {
             }
         });
 
-        // When scan finishes, start downloads automatically
         if self.scanning {
             if let Some(rx) = &self.scan_done_receiver {
-                if let Ok((ignored_count, skipped_count)) = rx.try_recv() {
+                if let Ok((ignored_count, skipped_count, scan_settings)) = rx.try_recv() {
                     self.scanning = false;
                     self.status = "Scan completed.".to_string();
                     self.scan_done_receiver = None;
 
-                    // Update the ignored extra folders count
                     self.ignored_extra_folders = ignored_count;
                     self.skipped_scanned_count = skipped_count;
                     if ignored_count > 0 {
@@ -1469,15 +1435,13 @@ impl eframe::App for SubtitleDownloader {
                         );
                     }
 
-                    // Start downloads automatically after scan
                     info!("Scan completed, starting downloads automatically");
-                    self.start_downloads();
+                    self.start_downloads_with_settings(scan_settings);
                 }
             }
         }
 
         if self.downloading || self.scanning {
-            // ~60 FPS for smooth spinner animation during downloads or scanning
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(1000));
@@ -1490,7 +1454,6 @@ impl eframe::App for SubtitleDownloader {
     fn on_exit(&mut self) {
         self.prepare_for_exit();
 
-        // Drop the receiver so the background thread's send() also fails immediately
         self.background_check_receiver = None;
 
         if let Some(handle) = self.background_check_handle.take() {
@@ -1500,7 +1463,6 @@ impl eframe::App for SubtitleDownloader {
                 let _ = tx.send(());
             });
 
-            // 500ms is plenty -- the thread checks the flag every 100ms
             match rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(_) => {
                     info!("Background thread exited gracefully");

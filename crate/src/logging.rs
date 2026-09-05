@@ -1,7 +1,4 @@
-//! Asynchronous logging system for the Rustitles application
-//!
-//! This module provides a non-blocking logging system that writes log messages
-//! to files without impacting the main application performance.
+//! Asynchronous application logging.
 
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -11,6 +8,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+fn log_wait(buffer_len: usize, elapsed: Duration) -> Duration {
+    if buffer_len == 0 {
+        LOG_FLUSH_INTERVAL
+    } else if buffer_len >= 10 {
+        Duration::ZERO
+    } else {
+        LOG_FLUSH_INTERVAL.saturating_sub(elapsed)
+    }
+}
 
 fn append_log_message(buffer: &mut VecDeque<String>, msg: LogMessage) -> bool {
     match msg {
@@ -49,14 +56,14 @@ fn report_logger_failure(reported: &AtomicBool, error: impl std::fmt::Display) {
     }
 }
 
-/// Asynchronous logger that writes to file without blocking the main thread
+/// Logger that writes without blocking the main thread.
 pub struct AsyncLogger {
     sender: mpsc::Sender<LogMessage>,
     handle: Option<std::thread::JoinHandle<()>>,
     failure_reported: Arc<AtomicBool>,
 }
 
-/// Types of log messages that can be sent to the logger
+/// Log message types.
 #[derive(Clone)]
 pub enum LogMessage {
     Info(String),
@@ -67,11 +74,11 @@ pub enum LogMessage {
 }
 
 impl AsyncLogger {
-    /// Create a new async logger that writes to a log file
+    /// Create a logger.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let (tx, rx) = mpsc::channel();
 
-        // Get the log file path based on platform
+        // Get the platform log path.
         let log_path = {
             #[cfg(windows)]
             {
@@ -84,7 +91,7 @@ impl AsyncLogger {
 
             #[cfg(not(windows))]
             {
-                // Use XDG cache directory on Linux
+                // Use the XDG cache directory.
                 let xdg_dirs = xdg::BaseDirectories::new();
                 if let Some(cache_dir) = xdg_dirs.get_cache_home() {
                     let app_dir = cache_dir.join("rustitles");
@@ -99,7 +106,7 @@ impl AsyncLogger {
             }
         };
 
-        // Create or open the log file
+        // Open the log file.
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -113,11 +120,7 @@ impl AsyncLogger {
             let failure_reported = thread_failure_reported;
 
             loop {
-                let wait = if buffer.len() >= 10 {
-                    Duration::ZERO
-                } else {
-                    LOG_FLUSH_INTERVAL.saturating_sub(last_flush.elapsed())
-                };
+                let wait = log_wait(buffer.len(), last_flush.elapsed());
                 match rx.recv_timeout(wait) {
                     Ok(msg) => {
                         if append_log_message(&mut buffer, msg) {
@@ -151,7 +154,7 @@ impl AsyncLogger {
                     }
                 }
 
-                // Flush after ten entries or at least 100 ms since the previous flush.
+                // Flush full or old buffers.
                 if buffer.len() >= 10
                     || (!buffer.is_empty() && last_flush.elapsed() >= LOG_FLUSH_INTERVAL)
                 {
@@ -170,7 +173,7 @@ impl AsyncLogger {
         })
     }
 
-    /// Send a log message to the async logger
+    /// Send a log message.
     pub fn log(&self, level: &str, message: &str) {
         let msg = match level {
             "INFO" => LogMessage::Info(message.to_string()),
@@ -180,13 +183,13 @@ impl AsyncLogger {
             _ => LogMessage::Info(message.to_string()),
         };
 
-        // The unbounded channel keeps GUI logging non-blocking.
+        // Keep GUI logging non-blocking.
         if let Err(error) = self.sender.send(msg) {
             report_logger_failure(&self.failure_reported, error);
         }
     }
 
-    /// Gracefully shutdown the logger
+    /// Shut down the logger.
     pub fn shutdown(self) {
         if let Err(error) = self.sender.send(LogMessage::Shutdown) {
             report_logger_failure(&self.failure_reported, error);
@@ -197,10 +200,10 @@ impl AsyncLogger {
     }
 }
 
-// Global logger instance
+// Global logger
 pub(crate) static LOGGER: Mutex<Option<AsyncLogger>> = Mutex::new(None);
 
-/// Initialize the global logging system
+/// Initialize global logging.
 pub fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
     let previous = {
         let mut guard = LOGGER
@@ -220,7 +223,7 @@ pub fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Send a message to the global logger
+/// Send a message to the global logger.
 static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_debug_enabled(enabled: bool) {
@@ -239,7 +242,7 @@ pub fn log_message(level: &str, message: &str) {
     }
 }
 
-// Custom log macros
+// Logging macros
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {
@@ -268,4 +271,21 @@ macro_rules! debug {
             $crate::logging::log_message("DEBUG", &format!($($arg)*));
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_logger_waits_after_the_flush_deadline() {
+        assert_eq!(log_wait(0, Duration::from_secs(10)), LOG_FLUSH_INTERVAL);
+        assert_eq!(log_wait(1, Duration::from_secs(10)), Duration::ZERO);
+        assert_eq!(log_wait(10, Duration::ZERO), Duration::ZERO);
+        let mut buffer = VecDeque::from(["first".into(), "second".into()]);
+        let mut output = Vec::new();
+        flush_log_buffer(&mut output, &mut buffer, &mut Instant::now()).unwrap();
+        assert_eq!(output, b"first\nsecond\n");
+        assert!(buffer.is_empty());
+    }
 }

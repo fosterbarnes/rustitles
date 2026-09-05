@@ -96,8 +96,10 @@ printf '%s  %s\n' "$LINUXDEPLOY_SHA256" "$LINUXDEPLOY_PATH" | sha256sum --check 
 chmod 755 "$LINUXDEPLOY_PATH"
 
 APPDIR="$TOOL_DIR/AppDir"
-ICON_PATH="$TOOL_DIR/256x256/rustitles.png"
-mkdir -p "$APPDIR" "$(dirname "$ICON_PATH")"
+DESKTOP_PATH="$TOOL_DIR/rustitles.desktop"
+ICON_PATH="$TOOL_DIR/rustitles.png"
+mkdir -p "$APPDIR"
+sed 's/\r$//' "$CRATE_DIR/resources/rustitles.desktop" > "$DESKTOP_PATH"
 cp -f "$CRATE_DIR/resources/rustitles_icon_256.png" "$ICON_PATH"
 
 echo "Building AppImage..."
@@ -109,7 +111,7 @@ LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
 "$LINUXDEPLOY_PATH" \
     --appdir "$APPDIR" \
     --executable "$ROOT_FOLDER/target/release/rustitles" \
-    --desktop-file "$CRATE_DIR/resources/rustitles.desktop" \
+    --desktop-file "$DESKTOP_PATH" \
     --icon-file "$ICON_PATH" \
     --output appimage
 

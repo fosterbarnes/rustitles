@@ -9,13 +9,13 @@ fn main() {
         .manifest_required()
         .unwrap();
 
-    // Explicitly set the Windows subsystem to prevent console window
+    // Use the Windows GUI subsystem.
     println!("cargo:rustc-link-arg=/SUBSYSTEM:WINDOWS");
     println!("cargo:rustc-link-arg=/ENTRY:mainCRTStartup");
 }
 
 #[cfg(not(windows))]
 fn main() {
-    // Linux build - no special configuration needed
+    // No special configuration on Linux.
     println!("cargo:rerun-if-changed=build.rs");
 }

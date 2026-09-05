@@ -1,39 +1,36 @@
-//! Data structures and types for the Rustitles subtitle downloader
-//!
-//! This module contains the core data structures including download jobs,
-//! application state, and shared data types used throughout the application.
+//! Application data structures.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// Type alias for shared download jobs
+/// Shared download jobs.
 pub type DownloadJobs = Arc<Mutex<Vec<DownloadJob>>>;
 
-/// Type alias for shared paths
+/// Shared paths.
 pub type SharedPaths = Arc<Mutex<Vec<PathBuf>>>;
 
-/// Status of a subtitle download job
+/// Subtitle download status.
 #[derive(Clone, PartialEq)]
 pub enum JobStatus {
     Pending,
     Running,
     Success,
     Skipped,
-    EmbeddedExists(String), // full message
+    EmbeddedExists(String),
     Failed(String),
 }
 
-/// Represents a single subtitle download job
+/// A subtitle download job.
 #[derive(Clone)]
 pub struct DownloadJob {
     pub video_path: PathBuf,
     pub status: JobStatus,
-    /// Latest subprocess status shown for pending or running jobs.
+    /// Latest status shown for pending or running jobs.
     pub output: String,
     pub subtitle_paths: Vec<PathBuf>,
 }
 
-/// Initial dependency state before the main UI becomes available.
+/// Startup dependency state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupPhase {
     Checking,
@@ -47,15 +44,17 @@ impl StartupPhase {
     }
 }
 
-/// Verified result of a Subliminal installation.
+/// Verified Subliminal installation result.
+#[derive(Default)]
 pub struct SubliminalInstallResult {
     pub installed: bool,
     pub version: Option<String>,
+    pub command: Option<crate::python_manager::SubliminalCommand>,
 }
 
-/// Main application state for the subtitle downloader
+/// Main application state.
 pub struct SubtitleDownloader {
-    // Download state
+    // Downloads
     pub downloads_completed: usize,
     pub total_downloads: usize,
     pub downloading: bool,
@@ -63,7 +62,7 @@ pub struct SubtitleDownloader {
     pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     pub download_jobs: DownloadJobs,
 
-    // Python/Subliminal state
+    // Python and Subliminal
     pub python_command: Option<String>,
     pub python_installed: bool,
     pub python_version: Option<String>,
@@ -71,6 +70,7 @@ pub struct SubtitleDownloader {
     pub pipx_version: Option<String>,
     pub subliminal_installed: bool,
     pub subliminal_version: Option<String>,
+    pub subliminal_command: Option<crate::python_manager::SubliminalCommand>,
     pub ffmpeg_installed: bool,
     pub homebrew_installed: bool,
     pub installing_python: bool,
@@ -78,7 +78,7 @@ pub struct SubtitleDownloader {
     pub python_install_result: Arc<Mutex<Option<Result<(), String>>>>,
     pub subliminal_install_result: Arc<Mutex<Option<Result<SubliminalInstallResult, String>>>>,
 
-    // User settings
+    // Settings
     pub selected_languages: Vec<String>,
     pub skip_scanned_media: bool,
     pub force_download: bool,
@@ -97,36 +97,38 @@ pub struct SubtitleDownloader {
     pub opensubtitlescom_apikey: String,
     pub show_opensubtitles_apikey: bool,
 
-    // Folder and scan state
+    // Folder and scan
     pub folder_path: String,
     pub scanned_videos: SharedPaths,
     pub videos_missing_subs: SharedPaths,
     pub scanning: bool,
     pub scan_thread_handle: Option<std::thread::JoinHandle<()>>,
     pub scan_generation: Arc<std::sync::atomic::AtomicUsize>,
-    pub scan_done_receiver: Option<std::sync::mpsc::Receiver<(usize, usize)>>,
+    pub scan_done_receiver:
+        Option<std::sync::mpsc::Receiver<(usize, usize, crate::settings::Settings)>>,
     pub scan_cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     pub ignored_extra_folders: usize,
     pub skipped_scanned_count: usize,
 
-    // UI status
+    // Status
     pub status: String,
 
-    // Cached jobs for UI rendering (to avoid cloning every frame)
+    // Cached jobs
     pub cached_jobs: Vec<DownloadJob>,
     pub last_jobs_update: std::time::Instant,
 
-    // Background installation status checking
+    // Background dependency checks
     pub background_check_handle: Option<std::thread::JoinHandle<()>>,
-    pub background_check_receiver: Option<std::sync::mpsc::Receiver<(bool, bool, bool, bool)>>,
+    pub background_check_receiver:
+        Option<std::sync::mpsc::Receiver<(bool, SubliminalInstallResult, bool, bool)>>,
     pub shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
 
-    // Version check state
+    // Version check
     pub latest_version: Option<String>,
     pub version_check_error: Option<String>,
     pub version_checked: bool,
 
-    // Startup dependency check (non-blocking init)
+    // Startup check
     pub startup_phase: StartupPhase,
     pub init_check_receiver: Option<std::sync::mpsc::Receiver<InitCheckResult>>,
     pub splash_started: std::time::Instant,
@@ -134,7 +136,7 @@ pub struct SubtitleDownloader {
     pub scan_history: Arc<Mutex<crate::scan_history::ScanHistory>>,
 }
 
-/// Result of the background startup dependency check
+/// Background startup dependency result.
 pub struct InitCheckResult {
     pub python_command: Option<String>,
     pub python_version: Option<String>,
@@ -142,6 +144,7 @@ pub struct InitCheckResult {
     pub pipx_version: Option<String>,
     pub subliminal_installed: bool,
     pub subliminal_version: Option<String>,
+    pub subliminal_command: Option<crate::python_manager::SubliminalCommand>,
     pub ffmpeg_installed: bool,
     pub homebrew_installed: bool,
 }

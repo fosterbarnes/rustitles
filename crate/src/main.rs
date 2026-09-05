@@ -1,9 +1,6 @@
-//! Rustitles - Subtitle Downloader Tool
-//!
-//! A desktop application for automatically downloading subtitles for video files.
-//! Built with Rust and egui for Windows, Linux, and macOS
+//! Rustitles subtitle downloader.
 
-// Import all modules
+// Application modules
 mod app;
 mod config;
 mod data_structures;
@@ -15,7 +12,7 @@ mod scan_history;
 mod settings;
 mod subtitle_utils;
 
-// Re-export commonly used items
+// Re-export shared items
 pub use config::*;
 pub use data_structures::*;
 pub use helper_functions::*;
@@ -24,13 +21,13 @@ pub use python_manager::*;
 pub use settings::*;
 pub use subtitle_utils::*;
 
-// Only keep actually used imports
+// Logging
 use crate::logging::LOGGER;
 
-// Third-party crate imports
+// Third-party imports
 use eframe::egui;
 
-// Platform-specific imports
+// Platform imports
 #[cfg(windows)]
 use windows::Win32::Foundation::POINT;
 #[cfg(windows)]
@@ -40,9 +37,9 @@ use windows::Win32::Graphics::Gdi::{
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-/// Initialize the application with logging and configuration
+/// Initialize the application.
 fn initialize_app() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
+    // Initialize logging.
     if let Err(e) = setup_logging() {
         eprintln!("Failed to initialize logging: {}", e);
     }
@@ -51,7 +48,7 @@ fn initialize_app() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Load application icon from embedded resources
+/// Load the application icon.
 fn load_app_icon() -> Option<egui::IconData> {
     #[cfg(windows)]
     {
@@ -73,7 +70,7 @@ fn load_app_icon() -> Option<egui::IconData> {
 
     #[cfg(target_os = "macos")]
     {
-        // Use rustitles_mac_icon.png on macOS so Dock icon matches the .app bundle icon
+        // Use the macOS icon.
         if let Ok(image) =
             image::load_from_memory(include_bytes!("../resources/rustitles_mac_icon.png"))
         {
@@ -112,7 +109,7 @@ fn load_app_icon() -> Option<egui::IconData> {
 
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
-        // Linux: try PNG first, then fallback to ICO
+        // Try PNG, then ICO.
         if let Ok(image) =
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
         {
@@ -140,7 +137,7 @@ fn load_app_icon() -> Option<egui::IconData> {
     }
 }
 
-/// Calculate the first-run position on the currently used monitor.
+/// Center the window on the active monitor.
 fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
     #[cfg(not(windows))]
     let _ = window_size;
@@ -171,7 +168,7 @@ fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
     egui::Pos2::new(100.0, 100.0)
 }
 
-/// Configure the application window and visuals
+/// Configure the application window.
 fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions {
     let window_size = WINDOW_SIZE;
     let initial_position = calculate_window_position(window_size);
@@ -181,7 +178,7 @@ fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions 
         .with_position(initial_position)
         .with_decorations(true)
         .with_resizable(true)
-        .with_min_inner_size(MIN_WINDOW_SIZE); // Minimum window size to prevent UI elements from disappearing
+        .with_min_inner_size(MIN_WINDOW_SIZE); // Minimum window size.
 
     if let Some(icon) = icon_data {
         viewport_builder = viewport_builder.with_icon(icon);
@@ -194,7 +191,7 @@ fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions 
     }
 }
 
-/// Apply the Rustitles dark desktop theme.
+/// Apply the theme.
 fn configure_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
 
@@ -215,7 +212,7 @@ fn configure_visuals(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, visuals);
 }
 
-/// Use embedded Inter for UI text on every platform.
+/// Configure the embedded font.
 fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -233,9 +230,9 @@ fn configure_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Cleanup resources when the application exits
+/// Cleanup.
 fn cleanup_on_exit() {
-    // Shutdown logger when app exits
+    // Shutdown logger.
     if let Ok(mut guard) = LOGGER.lock() {
         if let Some(logger) = guard.take() {
             logger.shutdown();
@@ -244,16 +241,16 @@ fn cleanup_on_exit() {
 }
 
 fn main() {
-    // Initialize the application
+    // Initialize the app.
     if let Err(e) = initialize_app() {
         eprintln!("Failed to initialize application: {}", e);
         return;
     }
 
-    // Load application icon
+    // Load icon.
     let icon_data = load_app_icon();
 
-    // Configure window
+    // Configure window.
     let native_options = configure_window(icon_data);
 
     info!(
@@ -261,12 +258,12 @@ fn main() {
         WINDOW_SIZE[0], WINDOW_SIZE[1]
     );
 
-    // Run the application
+    // Run the application.
     let result = eframe::run_native(
         "Rustitles",
         native_options,
         Box::new(|cc| {
-            // Configure visuals
+            // Configure visuals.
             configure_visuals(&cc.egui_ctx);
             configure_fonts(&cc.egui_ctx);
             egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -275,7 +272,6 @@ fn main() {
         }),
     );
 
-    // Cleanup on exit
     cleanup_on_exit();
 
     if let Err(error) = result {

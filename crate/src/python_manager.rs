@@ -1,7 +1,4 @@
-//! Python and Subliminal installation and management utilities
-//!
-//! This module handles Python installation, Subliminal setup, and environment
-//! configuration for the subtitle downloading functionality.
+//! Python and Subliminal installation utilities.
 
 use log::{error, info, warn};
 use std::env;
@@ -12,15 +9,31 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
-// Use the logging macros directly from the crate root
+// Logging macros
 use crate::debug;
 
 #[cfg(windows)]
 use std::fs::File;
 #[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
 use std::ptr::null_mut;
 #[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows::Win32::Foundation::{LPARAM, WPARAM};
+#[cfg(windows)]
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(windows)]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
@@ -30,18 +43,29 @@ use winreg::enums::*;
 #[cfg(windows)]
 use winreg::RegKey;
 
-// Unix-specific imports (Linux and macOS)
+// Unix imports
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use dirs;
 
-/// Python and Subliminal installation and management utilities
+/// Python and Subliminal utilities.
 pub struct PythonManager;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubliminalCommand {
+    pub program: PathBuf,
+    pub prefix: Vec<String>,
+}
 
 const SUBLIMINAL_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 const SUBLIMINAL_MAX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 const OUTPUT_CHANNEL_CAPACITY: usize = 128;
 const MAX_OUTPUT_CHUNKS_PER_POLL: usize = 64;
 const MAX_CAPTURED_OUTPUT_BYTES: usize = 1024 * 1024;
+const DEPENDENCY_PROBE_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DEPENDENCY_PROBE_MAX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const DEPENDENCY_INSTALL_MAX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+const FFPROBE_MAX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const PROCESS_CLEANUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(target_os = "linux")]
 static LINUX_PACKAGE_MANAGER: once_cell::sync::OnceCell<&'static str> =
     once_cell::sync::OnceCell::new();
@@ -146,11 +170,26 @@ impl SubliminalOutput {
     }
 
     fn collect(
-        mut self,
+        self,
         on_output: &mut dyn FnMut(&str, &[u8], std::time::Duration),
     ) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        self.collect_until(on_output, PROCESS_CLEANUP_TIMEOUT)
+    }
+
+    fn collect_until(
+        mut self,
+        on_output: &mut dyn FnMut(&str, &[u8], std::time::Duration),
+        timeout: std::time::Duration,
+    ) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        let deadline = std::time::Instant::now() + timeout;
         while !(self.stdout_thread.is_finished() && self.stderr_thread.is_finished()) {
             self.process(on_output);
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "Subliminal output readers did not exit after process cleanup",
+                ));
+            }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         while self.process(on_output) {}
@@ -177,6 +216,200 @@ impl SubliminalOutput {
         let mut stderr = stderr;
         while process_subliminal_output(&output_rx, &mut stdout, &mut stderr, started, on_output) {}
         stdout_result.and(stderr_result).map(|_| (stdout, stderr))
+    }
+
+    fn readers_finished(&self) -> bool {
+        self.stdout_thread.is_finished() && self.stderr_thread.is_finished()
+    }
+}
+
+#[cfg(windows)]
+struct ProcessJob {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+impl ProcessJob {
+    fn attach(child: &std::process::Child) -> io::Result<Self> {
+        let handle = unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null()) }
+            .map_err(io::Error::other)?;
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if let Err(error) = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const _,
+                std::mem::size_of_val(&limits) as u32,
+            )
+        } {
+            let _ = unsafe { CloseHandle(handle) };
+            return Err(io::Error::other(error));
+        }
+        if let Err(error) =
+            unsafe { AssignProcessToJobObject(handle, HANDLE(child.as_raw_handle() as _)) }
+        {
+            let _ = unsafe { CloseHandle(handle) };
+            return Err(io::Error::other(error));
+        }
+        if let Err(error) = Self::resume_child(child.id()) {
+            let _ = unsafe { CloseHandle(handle) };
+            return Err(error);
+        }
+        Ok(Self { handle })
+    }
+
+    fn resume_child(pid: u32) -> io::Result<()> {
+        let snapshot =
+            unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(io::Error::other)?;
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        if let Err(error) = unsafe { Thread32First(snapshot, &mut entry) } {
+            let _ = unsafe { CloseHandle(snapshot) };
+            return Err(io::Error::other(error));
+        }
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                let thread =
+                    unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) }
+                        .map_err(io::Error::other)?;
+                let resume_result = unsafe { ResumeThread(thread) };
+                let close_result = unsafe { CloseHandle(thread) };
+                let _ = unsafe { CloseHandle(snapshot) };
+                close_result.map_err(io::Error::other)?;
+                if resume_result == u32::MAX {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            if let Err(error) = unsafe { Thread32Next(snapshot, &mut entry) } {
+                let _ = unsafe { CloseHandle(snapshot) };
+                return Err(io::Error::other(error));
+            }
+        }
+    }
+
+    fn terminate(&self) -> io::Result<()> {
+        unsafe { TerminateJobObject(self.handle, 1) }.map_err(io::Error::other)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.handle) };
+    }
+}
+
+struct OwnedChild {
+    child: std::process::Child,
+    #[cfg(windows)]
+    job: ProcessJob,
+}
+
+impl OwnedChild {
+    fn spawn(
+        cmd: &str,
+        args: &[&str],
+        env_vars: &std::collections::HashMap<String, String>,
+    ) -> io::Result<Self> {
+        let child = Self::spawn_command(cmd, args, env_vars).spawn()?;
+        #[cfg(windows)]
+        let mut child = child;
+        #[cfg(windows)]
+        let job = match ProcessJob::attach(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            child,
+            #[cfg(windows)]
+            job,
+        })
+    }
+
+    fn spawn_command(
+        cmd: &str,
+        args: &[&str],
+        env_vars: &std::collections::HashMap<String, String>,
+    ) -> Command {
+        let mut command = Command::new(cmd);
+        command.envs(env_vars);
+        command.args(args);
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command.env("PYTHONUNBUFFERED", "1");
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows::Win32::System::Threading::CREATE_SUSPENDED;
+            command.creation_flags(0x08000000 | CREATE_SUSPENDED.0); // Hide the console and assign before execution.
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+
+            #[cfg(target_os = "linux")]
+            command.env("DEBIAN_FRONTEND", "noninteractive");
+        }
+
+        command
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        #[cfg(windows)]
+        self.job.terminate()?;
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let process_group = format!("-{}", self.child.id());
+            let status = Command::new("kill")
+                .args(["-KILL", "--", &process_group])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?;
+            if !status.success() && self.child.try_wait()?.is_none() {
+                return Err(io::Error::other(format!(
+                    "Failed to terminate Subliminal process group (exit {})",
+                    status.code().unwrap_or(-1)
+                )));
+            }
+        }
+
+        match self.child.kill() {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn wait(&mut self) -> io::Result<()> {
+        let deadline = std::time::Instant::now() + PROCESS_CLEANUP_TIMEOUT;
+        loop {
+            if self.try_wait()?.is_some() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "Subliminal process did not exit after termination",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -216,12 +449,12 @@ impl PythonManager {
         commands
     }
 
-    /// Check if Python is installed and return its version
+    /// Get the installed Python version.
     pub fn get_version() -> Option<String> {
         Self::get_python_info().map(|(_, version)| version)
     }
 
-    /// Return the command and version of the first valid Python 3 installation.
+    /// Get the first valid Python 3 command and version.
     pub fn get_python_info() -> Option<(String, String)> {
         for cmd in Self::python_commands() {
             if let Ok(output) =
@@ -246,17 +479,17 @@ impl PythonManager {
         None
     }
 
-    /// Return the installed Subliminal version string, if available
+    /// Get the installed Subliminal version.
     pub fn get_subliminal_version() -> Option<String> {
         Self::check_subliminal().1
     }
 
-    /// Check if Subliminal is installed
+    /// Check whether Subliminal is installed.
     pub fn is_subliminal_installed() -> bool {
         Self::check_subliminal().0
     }
 
-    /// Check if FFmpeg is installed and available on PATH.
+    /// Check whether FFmpeg is on PATH.
     pub fn is_ffmpeg_installed() -> bool {
         #[cfg(target_os = "macos")]
         let commands = [
@@ -274,7 +507,7 @@ impl PythonManager {
         })
     }
 
-    /// Check if Homebrew is installed on macOS.
+    /// Check whether Homebrew is installed on macOS.
     pub fn is_homebrew_installed() -> bool {
         #[cfg(target_os = "macos")]
         let commands = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew"];
@@ -288,137 +521,172 @@ impl PythonManager {
         })
     }
 
-    /// Combined check: returns (installed, version) in a single pass to avoid
-    /// redundant subprocess spawns. Each probe that proves subliminal exists
-    /// also extracts the version string when possible.
+    /// Check Subliminal and return its version when available.
     pub fn check_subliminal() -> (bool, Option<String>) {
         Self::check_subliminal_with_python(None)
     }
 
-    /// Check Subliminal while preferring an already resolved Python command.
+    /// Check Subliminal, preferring a resolved Python command.
     pub fn check_subliminal_with_python(preferred_python: Option<&str>) -> (bool, Option<String>) {
-        let empty_env = std::collections::HashMap::new();
-
-        // 1) Direct command -- fastest path
-        if let Ok(output) = Self::run_command_hidden("subliminal", &["--version"], &empty_env) {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            debug!(
-                "subliminal --version stdout: {} | stderr: {}",
-                stdout, stderr
-            );
-            if output.status.success() {
-                let text = if !stdout.trim().is_empty() {
-                    stdout.trim().to_string()
-                } else {
-                    stderr.trim().to_string()
-                };
-                if text.to_lowercase().contains("subliminal") {
-                    debug!("Subliminal found as direct command");
-                    return (true, Some(text));
-                }
-            }
-        }
-
-        // 2) pipx list (Linux/macOS)
-        if let Ok(output) = Self::run_command_hidden("pipx", &["list"], &empty_env) {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            debug!("pipx list output: {}", stdout);
-            if output.status.success() && stdout.to_lowercase().contains("subliminal") {
-                debug!("Subliminal found via pipx list");
-                // pipx list doesn't give a clean version; try to extract it
-                let version = stdout
-                    .lines()
-                    .find(|l| l.to_lowercase().contains("subliminal"))
-                    .map(|l| l.trim().to_string());
-                return (true, version);
-            }
-        }
-
-        // 3) pip show -- gives both installed status and version
-        for cmd in Self::python_probe_commands(preferred_python) {
-            if let Ok(output) =
-                Self::run_command_hidden(cmd, &["-m", "pip", "show", "subliminal"], &empty_env)
-            {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                debug!("{} -m pip show subliminal output: {}", cmd, stdout);
-                if output.status.success() && stdout.contains("Name: subliminal") {
-                    debug!("Subliminal found via pip show using {}", cmd);
-                    let version = stdout
-                        .lines()
-                        .find_map(|line| line.strip_prefix("Version: "))
-                        .map(|ver| format!("subliminal {}", ver.trim()));
-                    return (true, version);
-                }
-            }
-        }
-
-        // 4) Direct import -- last resort, no version info
-        for cmd in Self::python_probe_commands(preferred_python) {
-            if let Ok(output) = Self::run_command_hidden(
-                cmd,
-                &["-c", "import subliminal; print('subliminal available')"],
-                &empty_env,
-            ) {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                debug!("{} -c import subliminal output: {}", cmd, stdout);
-                if output.status.success() && stdout.contains("subliminal available") {
-                    debug!("Subliminal found via direct import using {}", cmd);
-                    return (true, None);
-                }
-            }
-        }
-
-        debug!("Subliminal not found");
-        (false, None)
+        let (command, version) = Self::resolve_subliminal(preferred_python);
+        (command.is_some(), version)
     }
 
-    /// Install Subliminal via pipx on Unix or pip on Windows.
-    pub fn install_subliminal() -> bool {
+    pub fn supported_subliminal_version(text: &str) -> bool {
+        if !text.to_ascii_lowercase().contains("subliminal") {
+            return false;
+        }
+        let Some(version) = text.split_whitespace().last() else {
+            return false;
+        };
+        let parts: Option<Vec<u32>> = version.split('.').map(|part| part.parse().ok()).collect();
+        parts.is_some_and(|parts| parts.len() == 3 && parts.as_slice() >= [2, 4, 0].as_slice())
+    }
+
+    fn resolve_program(command: &str) -> Option<PathBuf> {
+        Self::resolve_program_in_path(command, &env::var_os("PATH").unwrap_or_default())
+    }
+
+    fn resolve_program_in_path(command: &str, search_path: &std::ffi::OsStr) -> Option<PathBuf> {
+        let path = std::path::Path::new(command);
+        let candidates = if path.components().count() > 1 {
+            vec![path.to_path_buf()]
+        } else {
+            env::split_paths(search_path)
+                .map(|folder| folder.join(command))
+                .collect()
+        };
+        candidates.into_iter().find_map(|path| {
+            #[cfg(windows)]
+            let path = if path.extension().is_none() {
+                path.with_extension("exe")
+            } else {
+                path
+            };
+            path.is_file().then_some(path)
+        })
+    }
+
+    pub fn resolve_subliminal(
+        preferred_python: Option<&str>,
+    ) -> (Option<SubliminalCommand>, Option<String>) {
+        let mut attempts = vec![("subliminal", Vec::new())];
+        attempts.extend(
+            Self::python_probe_commands(preferred_python)
+                .into_iter()
+                .map(|program| (program, vec!["-m".to_string(), "subliminal".to_string()])),
+        );
+        let mut unsupported = None;
+        for (program, prefix) in attempts {
+            let Some(program) = Self::resolve_program(program) else {
+                continue;
+            };
+            let Some(program_arg) = program.to_str() else {
+                continue;
+            };
+            let mut args: Vec<_> = prefix.iter().map(String::as_str).collect();
+            args.push("--version");
+            let Ok(output) =
+                Self::run_command_hidden(program_arg, &args, &std::collections::HashMap::new())
+            else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let text = if stdout.trim().is_empty() {
+                stderr.trim()
+            } else {
+                stdout.trim()
+            };
+            if Self::supported_subliminal_version(text) {
+                return (
+                    Some(SubliminalCommand { program, prefix }),
+                    Some(text.to_string()),
+                );
+            }
+            if text.to_ascii_lowercase().contains("subliminal") {
+                unsupported = Some(text.to_string());
+            }
+        }
+        (None, unsupported)
+    }
+
+    /// Install Subliminal.
+    pub fn install_subliminal() -> Result<(), String> {
         #[cfg(windows)]
         {
             info!("Installing Subliminal via pip on Windows");
+            let mut last_error = None;
             for cmd in &["python", "py", "python3"] {
-                if let Ok(output) = Self::run_command_hidden(
+                match Self::run_install_command_hidden(
                     cmd,
-                    &["-m", "pip", "install", "subliminal"],
+                    &["-m", "pip", "install", "--upgrade", "subliminal>=2.4.0"],
                     &std::collections::HashMap::new(),
                 ) {
-                    if output.status.success() {
+                    Ok(output) if output.status.success() => {
                         info!("Subliminal installed successfully using {}", cmd);
-                        return true;
-                    } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        warn!("Failed to install Subliminal using {}: {}", cmd, stderr);
+                        return Ok(());
+                    }
+                    Ok(output) => {
+                        let error = format!(
+                            "{} exited with {}: {}",
+                            cmd,
+                            output.status,
+                            String::from_utf8_lossy(&output.stderr).trim()
+                        );
+                        warn!("Failed to install Subliminal: {}", error);
+                        last_error = Some(error);
+                    }
+                    Err(error) => {
+                        let error = format!("{}: {}", cmd, error);
+                        warn!("Failed to install Subliminal: {}", error);
+                        last_error = Some(error);
                     }
                 }
             }
-            error!("Failed to install Subliminal with all Python commands");
-            false
+            let error = last_error.unwrap_or_else(|| "No Python command was available".to_string());
+            error!(
+                "Failed to install Subliminal with all Python commands: {}",
+                error
+            );
+            Err(error)
         }
 
         #[cfg(target_os = "macos")]
         {
             info!("Installing Subliminal via pipx on macOS");
-            if let Ok(output) = Self::run_command_hidden(
+            match Self::run_install_command_hidden(
                 "pipx",
-                &["install", "subliminal"],
+                &["install", "--force", "subliminal>=2.4.0"],
                 &std::collections::HashMap::new(),
             ) {
-                if output.status.success() {
+                Ok(output) if output.status.success() => {
                     info!("Subliminal installed successfully using pipx");
-                    return true;
+                    Ok(())
                 }
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("Failed to install Subliminal using pipx: {}", stderr);
+                Ok(output) => {
+                    let error = format!(
+                        "pipx exited with {}: {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    error!("Failed to install Subliminal with pipx on macOS: {}", error);
+                    Err(error)
+                }
+                Err(error) => {
+                    error!("Failed to install Subliminal with pipx on macOS: {}", error);
+                    Err(error.to_string())
+                }
             }
-            error!("Failed to install Subliminal with pipx on macOS");
-            false
         }
 
         #[cfg(target_os = "linux")]
         {
             info!("Installing Subliminal via pipx on Linux");
+            let mut last_error = None;
 
             if let Ok(output) =
                 Self::run_command_hidden("pipx", &["--version"], &std::collections::HashMap::new())
@@ -435,65 +703,98 @@ impl PythonManager {
 
                     for (cmd, args) in &pipx_install_attempts {
                         let args_refs: Vec<&str> = args.iter().map(|s| &**s).collect();
-                        if let Ok(output) = Self::run_command_hidden(
+                        match Self::run_install_command_hidden(
                             cmd,
                             &args_refs,
                             &std::collections::HashMap::new(),
                         ) {
-                            if output.status.success() {
+                            Ok(output) if output.status.success() => {
                                 info!("pipx installed successfully using {}", cmd);
                                 break;
                             }
+                            Ok(output) => {
+                                last_error = Some(format!(
+                                    "{} exited with {}: {}",
+                                    cmd,
+                                    output.status,
+                                    String::from_utf8_lossy(&output.stderr).trim()
+                                ));
+                            }
+                            Err(error) => last_error = Some(format!("{}: {}", cmd, error)),
                         }
                     }
                 }
             }
 
-            if let Ok(output) = Self::run_command_hidden(
+            match Self::run_install_command_hidden(
                 "pipx",
-                &["install", "subliminal"],
+                &["install", "--force", "subliminal>=2.4.0"],
                 &std::collections::HashMap::new(),
             ) {
-                if output.status.success() {
+                Ok(output) if output.status.success() => {
                     info!("Subliminal installed successfully using pipx");
-                    return true;
-                } else {
+                    return Ok(());
+                }
+                Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     warn!("Failed to install Subliminal using pipx: {}", stderr);
+                    last_error = Some(format!(
+                        "pipx exited with {}: {}",
+                        output.status,
+                        stderr.trim()
+                    ));
                 }
+                Err(error) => last_error = Some(format!("pipx: {}", error)),
             }
 
             info!("pipx installation failed, trying pip install as fallback");
             for cmd in &["python3", "python"] {
-                if let Ok(output) = Self::run_command_hidden(
+                match Self::run_install_command_hidden(
                     cmd,
-                    &["-m", "pip", "install", "--user", "subliminal"],
+                    &[
+                        "-m",
+                        "pip",
+                        "install",
+                        "--user",
+                        "--upgrade",
+                        "subliminal>=2.4.0",
+                    ],
                     &std::collections::HashMap::new(),
                 ) {
-                    if output.status.success() {
+                    Ok(output) if output.status.success() => {
                         info!("Subliminal installed successfully using {} pip", cmd);
-                        return true;
-                    } else {
+                        return Ok(());
+                    }
+                    Ok(output) => {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         warn!("Failed to install Subliminal using {} pip: {}", cmd, stderr);
+                        last_error = Some(format!(
+                            "{} pip exited with {}: {}",
+                            cmd,
+                            output.status,
+                            stderr.trim()
+                        ));
                     }
+                    Err(error) => last_error = Some(format!("{} pip: {}", cmd, error)),
                 }
             }
 
-            error!("Failed to install Subliminal with pipx and pip fallback");
-            false
+            let error = last_error
+                .unwrap_or_else(|| "No pipx or Python install command was available".to_string());
+            error!(
+                "Failed to install Subliminal with pipx and pip fallback: {}",
+                error
+            );
+            Err(error)
         }
     }
 
-    /// Add Python Scripts directories to the user PATH (both the system
-    /// install Scripts folder next to python.exe, and the per-user Scripts
-    /// folder from `sysconfig`).
+    /// Add Python Scripts directories to PATH.
     pub fn add_scripts_to_path() -> Result<(), String> {
         #[cfg(windows)]
         {
             let mut scripts_dirs: Vec<String> = Vec::new();
 
-            // 1) System/install Scripts: directory containing python.exe + \Scripts
             for cmd in &["python", "py"] {
                 let output = Self::run_command_hidden(
                     cmd,
@@ -514,7 +815,6 @@ impl PythonManager {
                 }
             }
 
-            // 2) Per-user Scripts: sysconfig gives the exact versioned path
             for cmd in &["python", "py"] {
                 let output = Self::run_command_hidden(
                     cmd,
@@ -587,7 +887,7 @@ impl PythonManager {
         {
             let home_dir =
                 dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-            let mut paths_to_add = Vec::new();
+            let mut paths_to_add = vec![home_dir.join(".local/bin").to_string_lossy().into_owned()];
 
             if std::path::Path::new("/opt/homebrew/bin").exists() {
                 paths_to_add.push("/opt/homebrew/bin".to_string());
@@ -608,13 +908,13 @@ impl PythonManager {
                 }
             }
 
-            let current_path = env::var("PATH").unwrap_or_default();
+            let mut current_path = env::var("PATH").unwrap_or_default();
             for path in paths_to_add {
                 if !current_path.contains(&path) {
-                    let new_path = format!("{}:{}", path, current_path);
-                    env::set_var("PATH", new_path);
+                    current_path = format!("{}:{}", path, current_path);
                 }
             }
+            env::set_var("PATH", current_path);
 
             Ok(())
         }
@@ -637,11 +937,10 @@ impl PythonManager {
         }
     }
 
-    /// Refresh environment variables to pick up PATH changes
+    /// Refresh PATH changes.
     pub fn refresh_environment() -> Result<(), String> {
         #[cfg(windows)]
         {
-            // Get the updated PATH from registry
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
             let env = hkcu
                 .open_subkey_with_flags("Environment", KEY_READ)
@@ -649,7 +948,6 @@ impl PythonManager {
 
             let user_path: String = env.get_value("Path").unwrap_or_else(|_| "".into());
 
-            // Get system PATH
             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
             let sys_env = hklm
                 .open_subkey_with_flags(
@@ -660,7 +958,6 @@ impl PythonManager {
 
             let system_path: String = sys_env.get_value("Path").unwrap_or_else(|_| "".into());
 
-            // Combine system and user paths
             let combined_path = if system_path.trim().is_empty() {
                 user_path
             } else if user_path.trim().is_empty() {
@@ -669,7 +966,6 @@ impl PythonManager {
                 format!("{system_path};{user_path}")
             };
 
-            // Update current process environment
             std::env::set_var("PATH", combined_path);
 
             Ok(())
@@ -679,7 +975,7 @@ impl PythonManager {
         {
             let home_dir =
                 dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-            let mut paths_to_add = Vec::new();
+            let mut paths_to_add = vec![home_dir.join(".local/bin").to_string_lossy().into_owned()];
 
             for path in &["/opt/homebrew/bin", "/usr/local/bin"] {
                 if std::path::Path::new(path).exists() {
@@ -727,8 +1023,7 @@ impl PythonManager {
     }
 
     #[cfg(windows)]
-    /// Query the endoflife.date API for the latest stable Python 3.x version
-    /// and return the download URL for the amd64 Windows installer.
+    /// Get the latest Python 3 installer URL on Windows.
     pub fn get_latest_python_url() -> io::Result<String> {
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
@@ -779,7 +1074,7 @@ impl PythonManager {
     }
 
     #[cfg(windows)]
-    /// Download Python installer from official website
+    /// Download the Python installer.
     pub fn download_installer() -> io::Result<PathBuf> {
         let url = Self::get_latest_python_url()?;
         info!("Downloading Python installer from: {}", url);
@@ -805,7 +1100,7 @@ impl PythonManager {
     }
 
     #[cfg(windows)]
-    /// Install Python silently with required options
+    /// Install Python silently.
     pub fn install_silent(_installer_path: &PathBuf) -> io::Result<bool> {
         let mut command = Command::new(_installer_path);
         command.args([
@@ -815,31 +1110,29 @@ impl PythonManager {
             "Include_pip=1",
         ]);
 
-        // On Windows, try to hide the console window
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        command.creation_flags(0x08000000); // Hide the console.
 
         let status = command.status()?;
         Ok(status.success())
     }
 
     /// Ensure the Subliminal cache directory exists.
-    pub fn ensure_cache_dir() -> io::Result<PathBuf> {
-        let cache_dir = env::temp_dir().join("subliminal_cache");
-
-        // Create the directory if it doesn't exist
-        if !cache_dir.exists() {
-            std::fs::create_dir_all(&cache_dir)?;
+    pub fn ensure_cache_dir() -> io::Result<tempfile::TempDir> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("rustitles-subliminal-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
         }
-
-        Ok(cache_dir)
+        builder.tempdir()
     }
 
-    /// Clean up corrupted cache files (call this when DBM errors persist)
+    /// Clean up corrupted cache files.
     pub fn cleanup_cache() -> io::Result<()> {
         let cache_dir = env::temp_dir().join("subliminal_cache");
         if cache_dir.exists() {
-            // Remove all cache files to force a fresh start
             let cache_files = ["cache.dbm", "cache.dir", "cache.pag", "cache.db", "cache"];
             for file_name in &cache_files {
                 let cache_file = cache_dir.join(file_name);
@@ -847,98 +1140,32 @@ impl PythonManager {
                     let _ = std::fs::remove_file(&cache_file);
                 }
             }
-            // Also try to remove the directory and recreate it
             let _ = std::fs::remove_dir_all(&cache_dir);
             std::fs::create_dir_all(&cache_dir)?;
         }
         Ok(())
     }
 
-    /// Run Subliminal using available command forms, streaming bounded output while
-    /// enforcing the configured timeout.
+    /// Run Subliminal with bounded output and timeouts.
     pub fn run_subliminal(
         args: &[String],
         env_vars: &std::collections::HashMap<String, String>,
         cancel_flag: &std::sync::atomic::AtomicBool,
         on_output: &mut dyn FnMut(&str, &[u8], std::time::Duration),
-        preferred_python: Option<&str>,
+        command: &SubliminalCommand,
     ) -> io::Result<std::process::Output> {
-        let mut attempts = vec![("subliminal".to_string(), Vec::new())];
-        attempts.extend(
-            Self::python_probe_commands(preferred_python)
-                .into_iter()
-                .map(|command| {
-                    (
-                        command.to_string(),
-                        vec!["-m".to_string(), "subliminal".to_string()],
-                    )
-                }),
-        );
-        let mut last_output = None;
-        let mut last_error = None;
-
-        for (command, prefix) in attempts {
-            let mut command_args = prefix;
-            command_args.extend_from_slice(args);
-            let command_arg_refs: Vec<&str> = command_args.iter().map(String::as_str).collect();
-            match Self::run_subliminal_command(
-                &command,
-                &command_arg_refs,
-                env_vars,
-                cancel_flag,
-                on_output,
-            ) {
-                Ok(output) if output.status.success() => return Ok(output),
-                Ok(output) if Self::is_interpreter_launch_failure(&output) => {
-                    debug!(
-                        "{} could not run Subliminal: trying the next interpreter",
-                        command
-                    );
-                    last_output = Some(output);
-                }
-                Ok(output) => return Ok(output),
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    return Err(error);
-                }
-                Err(error) => {
-                    debug!("{} could not be started: {}", command, error);
-                    last_error = Some(error);
-                }
-            }
-        }
-
-        if let Some(output) = last_output {
-            Ok(output)
-        } else {
-            Err(last_error.unwrap_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "No Subliminal command could be started",
-                )
-            }))
-        }
+        let program = command.program.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Subliminal executable path is not valid UTF-8",
+            )
+        })?;
+        let mut command_args: Vec<_> = command.prefix.iter().map(String::as_str).collect();
+        command_args.extend(args.iter().map(String::as_str));
+        Self::run_subliminal_command(program, &command_args, env_vars, cancel_flag, on_output)
     }
 
-    fn is_interpreter_launch_failure(output: &std::process::Output) -> bool {
-        let text = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .to_lowercase();
-        text.contains("no module named subliminal")
-            || text.contains("module not found")
-            || text.contains("can't open file")
-            || text.contains("cannot open file")
-    }
-
-    /// Spawn one Subliminal command, forward stdout/stderr chunks while running,
-    /// retain bounded output, and enforce both inactivity and absolute limits.
+    /// Run one Subliminal command with output and timeout limits.
     fn run_subliminal_command(
         cmd: &str,
         args: &[&str],
@@ -966,12 +1193,14 @@ impl PythonManager {
         inactivity_timeout: std::time::Duration,
         max_timeout: std::time::Duration,
     ) -> io::Result<std::process::Output> {
-        let mut child = Self::hidden_command(cmd, args, env_vars).spawn()?;
-        let stdout = child
+        let mut process = OwnedChild::spawn(cmd, args, env_vars)?;
+        let stdout = process
+            .child
             .stdout
             .take()
             .expect("Subliminal stdout must be piped");
-        let stderr = child
+        let stderr = process
+            .child
             .stderr
             .take()
             .expect("Subliminal stderr must be piped");
@@ -1004,19 +1233,25 @@ impl PythonManager {
                 last_output = std::time::Instant::now();
             }
 
-            let status = match child.try_wait() {
+            let status = match process.try_wait() {
                 Ok(status) => status,
                 Err(error) => {
                     if let Err(cleanup_error) =
-                        Self::terminate_subliminal_command(&mut child, captured, on_output)
+                        Self::terminate_subliminal_command(&mut process, captured, on_output)
                     {
-                        warn!("Failed to clean up Subliminal command: {}", cleanup_error);
+                        return Err(io::Error::other(format!(
+                            "{}; process cleanup failed: {}",
+                            error, cleanup_error
+                        )));
                     }
                     return Err(error);
                 }
             };
             if let Some(status) = status {
-                Self::stop_subliminal_process(&mut child);
+                if !captured.readers_finished() {
+                    process.stop()?;
+                    process.wait()?;
+                }
                 let (stdout, stderr) = captured.collect(on_output)?;
                 return Ok(std::process::Output {
                     status,
@@ -1053,11 +1288,8 @@ impl PythonManager {
             if let Some((error_kind, error_message)) = termination_reason {
                 let elapsed = started.elapsed();
                 let since_output = last_output.elapsed();
-                if let Err(cleanup_error) =
-                    Self::terminate_subliminal_command(&mut child, captured, on_output)
-                {
-                    warn!("Failed to clean up Subliminal command: {}", cleanup_error);
-                }
+                let cleanup_error =
+                    Self::terminate_subliminal_command(&mut process, captured, on_output).err();
                 if error_kind == io::ErrorKind::Interrupted {
                     info!(
                         "Subliminal command cancelled after {} seconds",
@@ -1075,15 +1307,18 @@ impl PythonManager {
                         inactivity_timeout.as_secs()
                     );
                 }
-                return Err(io::Error::new(
-                    error_kind,
-                    format!(
-                        "{} (elapsed: {} seconds; last output: {} seconds ago)",
-                        error_message,
-                        elapsed.as_secs(),
-                        since_output.as_secs()
-                    ),
-                ));
+                let message = format!(
+                    "{} (elapsed: {} seconds; last output: {} seconds ago)",
+                    error_message,
+                    elapsed.as_secs(),
+                    since_output.as_secs()
+                );
+                return Err(match cleanup_error {
+                    Some(cleanup_error) => io::Error::other(format!(
+                        "{message}; process cleanup failed: {cleanup_error}"
+                    )),
+                    None => io::Error::new(error_kind, message),
+                });
             }
 
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1091,95 +1326,75 @@ impl PythonManager {
     }
 
     fn terminate_subliminal_command(
-        child: &mut std::process::Child,
+        process: &mut OwnedChild,
         captured: SubliminalOutput,
         on_output: &mut dyn FnMut(&str, &[u8], std::time::Duration),
     ) -> io::Result<()> {
-        Self::stop_subliminal_process(child);
-        let wait_result = child.wait().map(|_| ());
+        process.stop()?;
+        let wait_result = process.wait();
         let output_result = captured.collect(on_output).map(|_| ());
         wait_result.and(output_result)
     }
 
-    fn stop_subliminal_process(child: &mut std::process::Child) {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-
-            let pid = child.id().to_string();
-            let taskkill_status = Command::new("taskkill")
-                .args(["/PID", &pid, "/T", "/F"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(0x08000000)
-                .status();
-            if let Err(error) = taskkill_status {
-                warn!("Failed to terminate Subliminal process tree: {}", error);
-            }
-        }
-
-        #[cfg(unix)]
-        {
-            let process_group = format!("-{}", child.id());
-            match Command::new("kill")
-                .args(["-KILL", "--", &process_group])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-            {
-                Ok(status) if !status.success() => {
-                    debug!("Subliminal process group was already stopped: {}", status);
-                }
-                Err(error) => warn!("Failed to terminate Subliminal process group: {}", error),
-                _ => {}
-            }
-        }
-
-        if let Err(error) = child.kill() {
-            debug!("Subliminal process was already stopped: {}", error);
-        }
-    }
-
-    fn hidden_command(
-        cmd: &str,
-        args: &[&str],
-        env_vars: &std::collections::HashMap<String, String>,
-    ) -> Command {
-        let mut command = Command::new(cmd);
-        command.envs(env_vars);
-        command.args(args);
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-        command.env("PYTHONUNBUFFERED", "1");
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-
-            #[cfg(target_os = "linux")]
-            command.env("DEBIAN_FRONTEND", "noninteractive");
-        }
-
-        command
-    }
-
-    /// Run a command with hidden console window
+    /// Run a command without a console window.
     pub fn run_command_hidden(
         cmd: &str,
         args: &[&str],
         env_vars: &std::collections::HashMap<String, String>,
     ) -> io::Result<std::process::Output> {
-        Self::hidden_command(cmd, args, env_vars).output()
+        Self::run_command_hidden_with_timeouts(
+            cmd,
+            args,
+            env_vars,
+            DEPENDENCY_PROBE_INACTIVITY_TIMEOUT,
+            DEPENDENCY_PROBE_MAX_TIMEOUT,
+        )
     }
 
-    /// Check if pipx is available
+    fn run_install_command_hidden(
+        cmd: &str,
+        args: &[&str],
+        env_vars: &std::collections::HashMap<String, String>,
+    ) -> io::Result<std::process::Output> {
+        Self::run_command_hidden_with_timeouts(
+            cmd,
+            args,
+            env_vars,
+            DEPENDENCY_INSTALL_MAX_TIMEOUT,
+            DEPENDENCY_INSTALL_MAX_TIMEOUT,
+        )
+    }
+
+    pub fn run_ffprobe(args: &[&str]) -> io::Result<std::process::Output> {
+        Self::run_command_hidden_with_timeouts(
+            "ffprobe",
+            args,
+            &std::collections::HashMap::new(),
+            FFPROBE_MAX_TIMEOUT,
+            FFPROBE_MAX_TIMEOUT,
+        )
+    }
+
+    fn run_command_hidden_with_timeouts(
+        cmd: &str,
+        args: &[&str],
+        env_vars: &std::collections::HashMap<String, String>,
+        inactivity_timeout: std::time::Duration,
+        max_timeout: std::time::Duration,
+    ) -> io::Result<std::process::Output> {
+        let mut on_output = |_stream: &str, _bytes: &[u8], _elapsed: std::time::Duration| {};
+        Self::run_subliminal_command_with_timeouts(
+            cmd,
+            args,
+            env_vars,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut on_output,
+            inactivity_timeout,
+            max_timeout,
+        )
+    }
+
+    /// Check whether pipx is available.
     pub fn _pipx_available() -> bool {
         if let Ok(output) =
             Self::run_command_hidden("pipx", &["--version"], &std::collections::HashMap::new())
@@ -1189,7 +1404,7 @@ impl PythonManager {
         false
     }
 
-    /// Return the first supported Linux package manager available on PATH.
+    /// Get the first supported Linux package manager on PATH.
     #[cfg(target_os = "linux")]
     pub fn linux_package_manager() -> &'static str {
         *LINUX_PACKAGE_MANAGER.get_or_init(|| {
@@ -1208,7 +1423,7 @@ impl PythonManager {
         })
     }
 
-    /// Get pipx version string (e.g. "1.2.3"). Linux only.
+    /// Get the pipx version on Linux.
     #[cfg(target_os = "linux")]
     pub fn get_pipx_version() -> Option<String> {
         let output =
@@ -1219,7 +1434,6 @@ impl PythonManager {
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let s = stdout.trim();
-        // pipx --version may output "1.2.3" or "pipx 1.2.3" or "pipx version 1.2.3"
         let ver = s
             .strip_prefix("pipx")
             .map(|t| t.trim().trim_start_matches("version").trim())
@@ -1241,7 +1455,7 @@ impl PythonManager {
         None
     }
 
-    /// Try to install pipx using common methods
+    /// Try common pipx installation methods.
     #[allow(dead_code)]
     pub fn try_install_pipx() -> bool {
         let install_attempts = [
@@ -1269,6 +1483,53 @@ impl PythonManager {
 mod tests {
     use super::{append_capped, PythonManager, MAX_CAPTURED_OUTPUT_BYTES};
     use std::time::Duration;
+
+    #[test]
+    fn requires_a_recognized_stable_subliminal_version() {
+        for version in [
+            "subliminal, version 2.4.0",
+            "subliminal 2.5.1",
+            "subliminal 3.0.0",
+        ] {
+            assert!(PythonManager::supported_subliminal_version(version));
+        }
+        for version in [
+            "subliminal 2.3.9",
+            "subliminal 2.4.0rc1",
+            "Python 3.14.0",
+            "subliminal available",
+        ] {
+            assert!(!PythonManager::supported_subliminal_version(version));
+        }
+    }
+
+    #[test]
+    fn concurrent_caches_are_distinct_and_owned() {
+        let first = PythonManager::ensure_cache_dir().unwrap();
+        let second = PythonManager::ensure_cache_dir().unwrap();
+        assert_ne!(first.path(), second.path());
+        let old_path = first.path().to_owned();
+        drop(first);
+        assert!(!old_path.exists());
+        assert!(second.path().exists());
+    }
+
+    #[test]
+    fn resolves_a_pipx_executable_in_a_minimal_search_path() {
+        let folder = tempfile::tempdir().unwrap();
+        let executable = folder.path().join(if cfg!(windows) {
+            "subliminal.exe"
+        } else {
+            "subliminal"
+        });
+        std::fs::write(&executable, []).unwrap();
+        let search_path = std::env::join_paths([folder.path()]).unwrap();
+        assert_eq!(
+            PythonManager::resolve_program_in_path("subliminal", &search_path),
+            Some(executable)
+        );
+        assert!(PythonManager::resolve_program_in_path("missing", &search_path).is_none());
+    }
 
     #[test]
     fn resolved_python_command_is_probed_before_fallbacks() {
@@ -1458,5 +1719,37 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
         assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn parent_exit_does_not_leave_pipe_holding_descendant() {
+        let (command, args) = if cfg!(windows) {
+            (
+                "powershell.exe",
+                vec![
+                    "-NoProfile",
+                    "-Command",
+                    "$p=[Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]@{FileName='ping';Arguments='127.0.0.1 -n 20';UseShellExecute=$false}); exit 0",
+                ],
+            )
+        } else {
+            ("sh", vec!["-c", "sleep 20 & exit 0"])
+        };
+        let started = std::time::Instant::now();
+        let mut on_output = |_stream: &str, _bytes: &[u8], _elapsed: Duration| {};
+
+        let output = PythonManager::run_subliminal_command_with_timeouts(
+            command,
+            &args,
+            &std::collections::HashMap::new(),
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut on_output,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .expect("pipe-holding descendants should be cleaned up");
+
+        assert!(output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }

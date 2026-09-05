@@ -1,13 +1,10 @@
-//! Application settings and persistence management
-//!
-//! This module handles loading, saving, and managing user preferences
-//! and application settings that persist between sessions.
+//! Application settings and persistence.
 
 use crate::config::{DEFAULT_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_DOWNLOADS};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Application settings that persist between sessions
+/// Settings persisted between sessions.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     #[serde(default = "default_selected_languages")]
@@ -132,7 +129,7 @@ impl Settings {
         self
     }
 
-    /// User-facing description of where OpenSubtitles credentials are stored.
+    /// Explain where credentials are stored.
     pub fn credentials_storage_blurb() -> &'static str {
         #[cfg(windows)]
         {
@@ -144,7 +141,7 @@ impl Settings {
         }
     }
 
-    /// Get the path where settings are stored
+    /// Get the settings path.
     pub fn get_path() -> std::io::Result<PathBuf> {
         #[cfg(windows)]
         {
@@ -160,7 +157,7 @@ impl Settings {
 
         #[cfg(not(windows))]
         {
-            // Use XDG config directory on Linux/macOS
+            // Use the XDG config directory.
             let xdg_dirs = xdg::BaseDirectories::new();
             if let Some(config_dir) = xdg_dirs.get_config_home() {
                 let app_dir = config_dir.join("rustitles");
@@ -180,7 +177,7 @@ impl Settings {
         }
     }
 
-    /// Load settings from disk, falling back to defaults if file doesn't exist
+    /// Load settings from disk, or use defaults.
     pub fn load() -> Self {
         match Self::get_path() {
             Ok(path) => match std::fs::read_to_string(&path) {
@@ -211,19 +208,12 @@ impl Settings {
         }
     }
 
-    /// Save settings to disk (atomic: tmp + rename)
+    /// Save settings atomically.
     pub fn save(&self) -> Result<(), String> {
         let path = Self::get_path().map_err(|e| format!("Failed to get settings path: {}", e))?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json)
-            .map_err(|e| format!("Failed to write settings tmp file: {}", e))?;
-        // ponytail: best-effort fsync, ignore errors on platforms where not supported
-        if let Ok(f) = std::fs::File::open(&tmp) {
-            let _ = f.sync_all();
-        }
-        std::fs::rename(&tmp, &path)
+        crate::helper_functions::Utils::write_atomic(&path, json.as_bytes())
             .map_err(|e| format!("Failed to commit settings file: {}", e))?;
         crate::debug!("Settings saved to {}", path.display());
         Ok(())

@@ -77,12 +77,11 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   </tbody>
 </table>
 
-Or install the `.deb` directly from the terminal. This command will also automatically launch it after installing:
+Or install the `.deb` directly from the terminal:
 
 ```bash
 wget https://github.com/fosterbarnes/rustitles/releases/latest/download/rustitles.deb
 sudo apt install ./rustitles.deb
-rustitles
 ```
 
 <!-- End Quick Reference -->
@@ -100,13 +99,10 @@ Select your desired language(s)
 
 Set your maximum concurrent downloads or leave this number as default. This is the amount of subtitles that will be downloaded at the same time. (More concurrent downloads = more Python processes = more RAM used)
 
-Select the folder with your movies/tv-shows that you want subtitles for
+Select the folder with your media that you want subtitles for
 
 Wait for the processes to complete
 
-### Virtual Machines
-
-Certain OpenGL calls can cause issues in Windows VMs. Mesa 3d (an open source implementation of OpenGL) can be used to fix this issue on certain VMs, this fix works for me in VirtualBox. Just download [mesa3d-25.2.1-release-mingw.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-mingw.7z) or [mesa3d-25.2.1-release-msvc.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-msvc.7z) from <https://github.com/pal1000/mesa-dist-win/releases> unzip, and then run `systemwidedeploy.cmd` as admin, selecting "1. Core desktop OpenGL drivers".
 
 ### Extra Subliminal Matching Options
 
@@ -168,6 +164,11 @@ Any app that isn't code-signed has a chance of tripping your antivirus (code sig
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
 
 Any detections seen can be false positives because the app checks for dependencies and can install Python on Windows if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub.
+
+### Virtual Machines
+
+Certain OpenGL calls can cause issues in Windows VMs. Mesa 3d (an open source implementation of OpenGL) can be used to fix this issue on certain VMs, this fix works for me in VirtualBox. Just download [mesa3d-25.2.1-release-mingw.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-mingw.7z) or [mesa3d-25.2.1-release-msvc.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-msvc.7z) from <https://github.com/pal1000/mesa-dist-win/releases> unzip, and then run `systemwidedeploy.cmd` as admin, selecting "1. Core desktop OpenGL drivers".
+
 
 ## Support
 

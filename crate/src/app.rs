@@ -1,6 +1,4 @@
-//! Application logic for the Rustitles subtitle downloader
-//!
-//! This module contains the main application state and logic.
+//! Application logic.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -10,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::data_structures::{
-    DownloadJob, InitCheckResult, JobStatus, StartupPhase, SubliminalInstallResult,
+    DownloadJob, DownloadJobs, InitCheckResult, JobStatus, StartupPhase, SubliminalInstallResult,
     SubtitleDownloader,
 };
 use crate::helper_functions::Utils;
@@ -19,10 +17,10 @@ use crate::scan_history::ScanHistory;
 use crate::settings::Settings;
 use crate::subtitle_utils::SubtitleUtils;
 
-// Use the logging macros directly from the crate root
+// Logging macros
 use crate::{debug, error, info, warn};
 
-// Version check state
+// Version check
 use once_cell::sync::Lazy;
 type VersionCheckState = (Option<String>, Option<String>, bool);
 
@@ -62,6 +60,14 @@ fn latest_non_empty_line(output: &str) -> Option<&str> {
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
+}
+
+fn join_download_worker(idx: usize, handle: thread::JoinHandle<()>, jobs: &DownloadJobs) {
+    if handle.join().is_err() {
+        if let Some(job) = jobs.lock().unwrap_or_else(|e| e.into_inner()).get_mut(idx) {
+            job.status = JobStatus::Failed("Download worker failed".to_string());
+        }
+    }
 }
 
 fn next_char_at(s: &str, idx: usize) -> Option<char> {
@@ -145,23 +151,16 @@ fn redact_sensitive(text: &str) -> String {
                 };
                 if end > start {
                     out.replace_range(start..end, "***");
+                    search_from = start + 3;
+                } else {
+                    search_from = end;
                 }
-                search_from = start + 3;
             } else {
                 search_from = after_key;
             }
         }
     }
     out
-}
-
-fn escape_toml_string(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 fn subtitle_file_signature(path: &Path) -> Option<(u64, u128)> {
@@ -177,12 +176,11 @@ fn subtitle_file_signature(path: &Path) -> Option<(u64, u128)> {
 fn subliminal_config_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        dirs::config_dir()
-            .map(|p| p.join("subliminal").join("subliminal.toml"))
-            .or_else(|| {
-                dirs::data_local_dir()
-                    .map(|p| p.join("Acme").join("subliminal").join("subliminal.toml"))
-            })
+        dirs::data_local_dir().map(|p| {
+            p.join("subliminal")
+                .join("subliminal")
+                .join("subliminal.toml")
+        })
     }
     #[cfg(target_os = "macos")]
     {
@@ -205,89 +203,89 @@ fn subliminal_config_path() -> Option<PathBuf> {
     }
 }
 
-fn sync_subliminal_credentials(username: &str, password: &str, apikey: &str) {
-    let Some(path) = subliminal_config_path() else {
-        return;
+fn sync_credentials_at(
+    path: &Path,
+    username: &str,
+    password: &str,
+    apikey: &str,
+) -> Result<String, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("Could not read Subliminal configuration: {error}")),
     };
-    let mut lines: Vec<String> = std::fs::read_to_string(&path)
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect();
-    let header = "[provider.opensubtitlescom]";
-    let values = [
+    let mut document = content.parse::<toml_edit::DocumentMut>().map_err(|_| {
+        "Invalid Subliminal configuration; the existing file was not changed".to_string()
+    })?;
+    if document.get("provider").is_none() {
+        document["provider"] = toml_edit::table();
+    }
+    let providers = document
+        .get_mut("provider")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .ok_or("Subliminal provider configuration must be a table")?;
+    if !providers.contains_key("opensubtitlescom") {
+        providers.insert("opensubtitlescom", toml_edit::table());
+    }
+    let provider = providers
+        .get_mut("opensubtitlescom")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .ok_or("OpenSubtitles.com configuration must be a table")?;
+    for (name, value) in [
         ("username", username),
         ("password", password),
         ("apikey", apikey),
-    ];
-    if !lines.iter().any(|line| line.trim() == header) {
-        if values.iter().all(|(_, value)| value.is_empty()) {
-            return;
+    ] {
+        if value.is_empty() {
+            provider.remove(name);
+        } else {
+            provider.insert(name, toml_edit::value(value));
         }
-        if lines.last().is_some_and(|line| !line.is_empty()) {
-            lines.push(String::new());
-        }
-        lines.push(header.to_string());
     }
+    let rewritten = document.to_string();
+    let parent = path
+        .parent()
+        .ok_or("Subliminal configuration has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Could not create config directory: {e}"))?;
+    Utils::write_atomic(path, rewritten.as_bytes())
+        .map_err(|e| format!("Could not save Subliminal configuration: {e}"))?;
+    Ok(rewritten)
+}
 
-    let mut in_target = false;
-    let mut found = [false; 3];
-    let mut rewritten = Vec::with_capacity(lines.len() + values.len());
-    for line in lines {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('[') {
-            in_target = trimmed == header;
-        }
-        if in_target {
-            let key = trimmed.split_once('=').map(|(key, _)| key.trim());
-            if let Some(index) = values.iter().position(|(name, _)| Some(*name) == key) {
-                found[index] = true;
-                if !values[index].1.is_empty() {
-                    rewritten.push(format!(
-                        "{} = \"{}\"",
-                        values[index].0,
-                        escape_toml_string(values[index].1)
-                    ));
-                }
-                continue;
-            }
-        }
-        rewritten.push(line);
-    }
+fn sync_subliminal_credentials(
+    username: &str,
+    password: &str,
+    apikey: &str,
+) -> Result<String, String> {
+    let path =
+        subliminal_config_path().ok_or("Could not resolve the Subliminal configuration path")?;
+    sync_credentials_at(&path, username, password, apikey)
+}
 
-    if let Some(header_index) = rewritten.iter().position(|line| line.trim() == header) {
-        let mut insert_at = header_index + 1;
-        for (index, (name, value)) in values.iter().enumerate() {
-            if !found[index] && !value.is_empty() {
-                rewritten.insert(
-                    insert_at,
-                    format!("{} = \"{}\"", name, escape_toml_string(value)),
-                );
-                insert_at += 1;
-            }
-        }
+fn session_config(content: &str) -> Result<String, String> {
+    let mut document = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| "Invalid Subliminal configuration".to_string())?;
+    if document.get("download").is_none() {
+        document["download"] = toml_edit::table();
     }
-
-    let mut content = rewritten.join("\n");
-    if !content.ends_with('\n') {
-        content.push('\n');
+    let download = document
+        .get_mut("download")
+        .and_then(toml_edit::Item::as_table_like_mut)
+        .ok_or("Subliminal download configuration must be a table")?;
+    // These defaults must not override the independent GUI controls or sidecar location.
+    for name in [
+        "force",
+        "force_external_subtitles",
+        "force_embedded_subtitles",
+        "single",
+    ] {
+        download.insert(name, toml_edit::value(false));
     }
-    if let Some(parent) = path.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            crate::warn!(
-                "Failed to create Subliminal config directory {}: {}",
-                parent.display(),
-                error
-            );
-        }
-    }
-    if let Err(error) = std::fs::write(&path, content) {
-        crate::warn!(
-            "Failed to write Subliminal config {}: {}",
-            path.display(),
-            error
-        );
-    }
+    download.remove("directory");
+    download.insert("language_format", toml_edit::value("alpha2"));
+    Ok(document.to_string())
 }
 
 fn probe_startup_dependencies() -> InitCheckResult {
@@ -306,7 +304,7 @@ fn probe_startup_dependencies() -> InitCheckResult {
         }
     }
 
-    // Probe commands that depend on the refreshed environment only after Python setup.
+    // Probe after Python setup.
     let ffmpeg_handle = thread::spawn(PythonManager::is_ffmpeg_installed);
     let homebrew_handle = thread::spawn(PythonManager::is_homebrew_installed);
     #[cfg(target_os = "macos")]
@@ -315,7 +313,7 @@ fn probe_startup_dependencies() -> InitCheckResult {
     let ffmpeg_installed = ffmpeg_handle.join().unwrap_or(false);
     let homebrew_installed = homebrew_handle.join().unwrap_or(false);
 
-    // Linux pipx bootstrapping depends on Python and must remain ordered.
+    // Keep Linux pipx setup ordered.
     #[cfg(windows)]
     let (pipx_installed, pipx_version) = (true, None::<String>);
     #[cfg(target_os = "macos")]
@@ -352,12 +350,16 @@ fn probe_startup_dependencies() -> InitCheckResult {
         (false, None)
     };
 
-    let (subliminal_installed, subliminal_version) =
-        if python_installed && (pipx_installed || cfg!(target_os = "macos")) {
-            PythonManager::check_subliminal_with_python(python_command.as_deref())
-        } else {
-            (false, None)
-        };
+    let subliminal = if python_installed && (pipx_installed || cfg!(target_os = "macos")) {
+        probe_subliminal(python_command.as_deref())
+    } else {
+        SubliminalInstallResult::default()
+    };
+    let SubliminalInstallResult {
+        installed: subliminal_installed,
+        version: subliminal_version,
+        command: subliminal_command,
+    } = subliminal;
 
     info!(
         "Python installed: {}, version: {:?}",
@@ -381,17 +383,42 @@ fn probe_startup_dependencies() -> InitCheckResult {
         pipx_version,
         subliminal_installed,
         subliminal_version,
+        subliminal_command,
         ffmpeg_installed,
         homebrew_installed,
     }
 }
 
+fn probe_subliminal(python: Option<&str>) -> SubliminalInstallResult {
+    let (command, version) = PythonManager::resolve_subliminal(python);
+    SubliminalInstallResult {
+        installed: command.is_some(),
+        version,
+        command,
+    }
+}
+
+fn subtitle_policy_args(ignore_embedded: bool, overwrite: bool, exclude_sdh: bool) -> Vec<String> {
+    let mut args = Vec::new();
+    if ignore_embedded {
+        args.push("--force-embedded-subtitles".into());
+    }
+    if overwrite {
+        args.push("--force-external-subtitles".into());
+    }
+    if exclude_sdh {
+        args.extend([
+            "--no-hearing-impaired".into(),
+            "--language-type-suffix".into(),
+        ]);
+    }
+    args
+}
+
 fn install_subliminal_and_verify(
     python_command: Option<String>,
 ) -> Result<SubliminalInstallResult, String> {
-    if !PythonManager::install_subliminal() {
-        return Err("pipx/pip install failed".to_string());
-    }
+    PythonManager::install_subliminal()?;
     PythonManager::add_scripts_to_path()
         .map_err(|e| format!("Subliminal installed, but failed to update PATH: {}", e))?;
     PythonManager::refresh_environment().map_err(|e| {
@@ -401,10 +428,9 @@ fn install_subliminal_and_verify(
         )
     })?;
 
-    let (installed, version) =
-        PythonManager::check_subliminal_with_python(python_command.as_deref());
-    if installed {
-        Ok(SubliminalInstallResult { installed, version })
+    let result = probe_subliminal(python_command.as_deref());
+    if result.installed {
+        Ok(result)
     } else {
         Err("Subliminal installation could not be verified".to_string())
     }
@@ -422,8 +448,15 @@ fn spawn_subliminal_install(
 
 fn verified_subliminal_state(
     result: Result<SubliminalInstallResult, String>,
-) -> Result<(bool, Option<String>), String> {
-    result.map(|result| (result.installed, result.version))
+) -> Result<
+    (
+        bool,
+        Option<String>,
+        Option<crate::python_manager::SubliminalCommand>,
+    ),
+    String,
+> {
+    result.map(|result| (result.installed, result.version, result.command))
 }
 
 impl Default for SubtitleDownloader {
@@ -434,20 +467,22 @@ impl Default for SubtitleDownloader {
             || !settings.opensubtitlescom_password.is_empty()
             || !settings.opensubtitlescom_apikey.is_empty()
         {
-            sync_subliminal_credentials(
+            if let Err(error) = sync_subliminal_credentials(
                 &settings.opensubtitlescom_username,
                 &settings.opensubtitlescom_password,
                 &settings.opensubtitlescom_apikey,
-            );
+            ) {
+                warn!("{error}");
+            }
         }
 
-        // Kick off dependency checks in background so the window appears instantly
+        // Check dependencies in the background.
         let (init_tx, init_rx) = mpsc::channel();
         thread::spawn(move || {
             let _ = init_tx.send(probe_startup_dependencies());
         });
 
-        // Start version check in background
+        // Check for updates in the background.
         let version_ptr_clone = VERSION_PTR.clone();
         thread::spawn(move || {
             let url = "https://api.github.com/repos/fosterbarnes/rustitles/releases/latest";
@@ -495,6 +530,7 @@ impl Default for SubtitleDownloader {
             pipx_version: None,
             subliminal_installed: false,
             subliminal_version: None,
+            subliminal_command: None,
             ffmpeg_installed: false,
             homebrew_installed: false,
             installing_python: false,
@@ -547,9 +583,8 @@ impl Default for SubtitleDownloader {
 }
 
 impl SubtitleDownloader {
-    /// Save the current user settings to disk
-    pub fn save_current_settings(&self) {
-        let settings = Settings {
+    fn settings_snapshot(&self) -> Settings {
+        Settings {
             selected_languages: self.selected_languages.clone(),
             skip_scanned_media: self.skip_scanned_media,
             force_download: self.force_download,
@@ -565,12 +600,19 @@ impl SubtitleDownloader {
             opensubtitlescom_username: self.opensubtitlescom_username.clone(),
             opensubtitlescom_password: self.opensubtitlescom_password.clone(),
             opensubtitlescom_apikey: self.opensubtitlescom_apikey.clone(),
-        };
-        sync_subliminal_credentials(
+        }
+    }
+
+    /// Save the current settings.
+    pub fn save_current_settings(&self) {
+        let settings = self.settings_snapshot();
+        if let Err(error) = sync_subliminal_credentials(
             &self.opensubtitlescom_username,
             &self.opensubtitlescom_password,
             &self.opensubtitlescom_apikey,
-        );
+        ) {
+            warn!("{error}");
+        }
 
         if let Err(e) = settings.save() {
             warn!("Failed to save settings: {}", e);
@@ -579,13 +621,12 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Scan the selected folder for video files and update the missing subtitles list
+    /// Scan the selected folder for missing subtitles.
     pub fn scan_folder(&mut self) {
         if self.folder_path.is_empty() {
             return;
         }
 
-        // If already scanning, cancel the previous scan first
         if self.scanning {
             self.scan_cancel_flag.store(true, Ordering::SeqCst);
             join_worker_with_timeout(self.scan_thread_handle.take(), "scan");
@@ -594,7 +635,6 @@ impl SubtitleDownloader {
             info!("Previous scan cancelled for rescan");
         }
 
-        // Cancel any active downloads before clearing state
         if self.downloading {
             self.cancel_flag.store(true, Ordering::SeqCst);
             join_worker_with_timeout(self.download_thread_handle.take(), "download");
@@ -608,11 +648,11 @@ impl SubtitleDownloader {
         self.status = "Scanning...".to_string();
         self.scanning = true;
 
-        // Reset cancel flag for the new scan
         self.scan_cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_flag = Arc::clone(&self.scan_cancel_flag);
         let scan_generation = Arc::clone(&self.scan_generation);
         let scan_generation_id = self.scan_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let scan_settings = self.settings_snapshot();
 
         let (tx, rx) = mpsc::channel();
         self.scan_done_receiver = Some(rx);
@@ -620,15 +660,14 @@ impl SubtitleDownloader {
         let scanned_videos = Arc::clone(&self.scanned_videos);
         let videos_missing_subs = Arc::clone(&self.videos_missing_subs);
         let folder_path = self.folder_path.clone();
-        let selected_languages = self.selected_languages.clone();
-        let overwrite_existing = self.overwrite_existing;
-        let skip_scanned_media = self.skip_scanned_media;
-        let ignore_local_extras = self.ignore_local_extras;
-        let exclude_hearing_impaired = self.exclude_hearing_impaired;
+        let selected_languages = scan_settings.selected_languages.clone();
+        let overwrite_existing = scan_settings.overwrite_existing;
+        let skip_scanned_media = scan_settings.skip_scanned_media;
+        let ignore_local_extras = scan_settings.ignore_local_extras;
+        let exclude_hearing_impaired = scan_settings.exclude_hearing_impaired;
         let ignored_folders_count = Arc::new(AtomicUsize::new(0));
         let skipped_count = Arc::new(AtomicUsize::new(0));
 
-        // Clear previous results and download state
         {
             *scanned_videos.lock().unwrap_or_else(|e| e.into_inner()) = Vec::new();
             *videos_missing_subs
@@ -644,7 +683,7 @@ impl SubtitleDownloader {
         self.total_downloads = 0;
 
         self.cancel_flag = Arc::new(AtomicBool::new(false));
-        // Keep cancelled workers from mutating the next scan/download session.
+        // Keep old workers from changing new state.
         self.download_jobs = Arc::new(Mutex::new(Vec::new()));
         self.ignored_extra_folders = 0;
         self.skipped_scanned_count = 0;
@@ -791,12 +830,12 @@ impl SubtitleDownloader {
             }
             let ignored_count = ignored_folders_count_clone.load(Ordering::Relaxed);
             let skipped_count = skipped_count_clone.load(Ordering::Relaxed);
-            let _ = tx.send((ignored_count, skipped_count));
+            let _ = tx.send((ignored_count, skipped_count, scan_settings));
         });
         self.scan_thread_handle = Some(scan_handle);
     }
 
-    /// Signal workers to stop and wait briefly for scan/download threads (app exit).
+    /// Stop scan and download workers.
     pub fn prepare_for_exit(&mut self) {
         self.shutdown_flag.store(true, Ordering::Relaxed);
         self.scan_cancel_flag.store(true, Ordering::SeqCst);
@@ -805,17 +844,39 @@ impl SubtitleDownloader {
         join_worker_with_timeout(self.download_thread_handle.take(), "download");
     }
 
-    /// Start subtitle downloads for all videos missing subtitles
+    /// Start subtitle downloads.
     pub fn start_downloads(&mut self) {
-        if self.downloading || self.selected_languages.is_empty() {
+        self.start_downloads_with_settings(self.settings_snapshot());
+    }
+
+    pub(crate) fn start_downloads_with_settings(&mut self, settings: Settings) {
+        if self.downloading || settings.selected_languages.is_empty() {
             self.status =
                 "Select at least one language and ensure no downloads are in progress.".to_string();
             warn!(
                 "Cannot start downloads: downloading={}, languages={:?}",
-                self.downloading, self.selected_languages
+                self.downloading, settings.selected_languages
             );
             return;
         }
+
+        let Some(subliminal_command) = self.subliminal_command.clone() else {
+            self.status = "A runnable Subliminal 2.4.0 or newer is required. Upgrade Subliminal before downloading.".into();
+            return;
+        };
+        let config_content = match sync_subliminal_credentials(
+            &settings.opensubtitlescom_username,
+            &settings.opensubtitlescom_password,
+            &settings.opensubtitlescom_apikey,
+        )
+        .and_then(|content| session_config(&content))
+        {
+            Ok(content) => content,
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
 
         let videos_missing = self
             .videos_missing_subs
@@ -831,12 +892,12 @@ impl SubtitleDownloader {
         info!(
             "Starting subtitle downloads for {} videos with languages: {:?}",
             videos_missing.len(),
-            self.selected_languages
+            settings.selected_languages
         );
         self.status = "Starting subtitle downloads...".to_string();
         self.downloads_completed = 0;
         self.total_downloads = 0;
-        let langs = self.selected_languages.clone();
+        let langs = settings.selected_languages.clone();
         let jobs: Vec<_> = videos_missing
             .into_iter()
             .map(|video_path| DownloadJob {
@@ -858,15 +919,14 @@ impl SubtitleDownloader {
 
         let cancel_flag = Arc::clone(&self.cancel_flag);
         let jobs_arc = Arc::clone(&self.download_jobs);
-        let max_concurrent = self.concurrent_downloads.max(1);
-        let force_download = self.force_download;
-        let overwrite_existing = self.overwrite_existing;
-        let providers = self.providers.clone();
-        let refiners = self.refiners.clone();
-        let minimum_score = self.minimum_score;
-        let exclude_hearing_impaired = self.exclude_hearing_impaired;
-        let opensubtitles_max_pages = self.opensubtitles_max_pages;
-        let python_command = self.python_command.clone();
+        let max_concurrent = settings.concurrent_downloads.max(1);
+        let force_download = settings.force_download;
+        let overwrite_existing = settings.overwrite_existing;
+        let providers = settings.providers.clone();
+        let refiners = settings.refiners.clone();
+        let minimum_score = settings.minimum_score;
+        let exclude_hearing_impaired = settings.exclude_hearing_impaired;
+        let opensubtitles_max_pages = settings.opensubtitles_max_pages;
         let scan_history = Arc::clone(&self.scan_history);
 
         info!("Starting download thread with {} concurrent downloads, force={}, overwrite={}, providers={:?}, refiners={:?}, minimum_score={}, exclude_sdh={}", max_concurrent, force_download, overwrite_existing, providers, refiners, minimum_score, exclude_hearing_impaired);
@@ -880,17 +940,17 @@ impl SubtitleDownloader {
                 .filter(|(_, job)| job.status == JobStatus::Pending)
                 .map(|(idx, _)| idx)
                 .collect();
-            let mut running_threads: Vec<thread::JoinHandle<()>> = Vec::new();
+            let mut running_threads: Vec<(usize, thread::JoinHandle<()>)> = Vec::new();
             let folder_cache: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> =
                 Arc::new(Mutex::new(HashMap::new()));
 
             while !pending_indexes.is_empty() || !running_threads.is_empty() {
                 let mut active_threads = Vec::with_capacity(running_threads.len());
-                for handle in running_threads.drain(..) {
+                for (idx, handle) in running_threads.drain(..) {
                     if handle.is_finished() {
-                        let _ = handle.join();
+                        join_download_worker(idx, handle, &jobs_arc);
                     } else {
-                        active_threads.push(handle);
+                        active_threads.push((idx, handle));
                     }
                 }
                 running_threads = active_threads;
@@ -926,7 +986,8 @@ impl SubtitleDownloader {
                     let providers_clone = providers.clone();
                     let refiners_clone = refiners.clone();
                     let opensubtitles_max_pages_clone = opensubtitles_max_pages;
-                    let python_command_clone = python_command.clone();
+                    let subliminal_command_clone = subliminal_command.clone();
+                    let config_content = config_content.clone();
                     let jobs_clone = Arc::clone(&jobs_arc);
                     let history_clone = Arc::clone(&scan_history);
                     let cancel_flag_clone = Arc::clone(&cancel_flag);
@@ -943,7 +1004,7 @@ impl SubtitleDownloader {
                         }
 
                         debug!("Processing video: {}", job_path.display());
-                        // ponytail: cache per-folder listing to avoid duplicate read_dir for videos in same folder
+                        // Cache folder listings.
                         let existing_subtitles = {
                             let listing = if let Some(parent) = job_path.parent() {
                                 let cached = folder_cache_clone
@@ -978,7 +1039,7 @@ impl SubtitleDownloader {
                                         .map(|signature| (path.clone(), signature))
                                 })
                                 .collect();
-                        if force_download || overwrite_existing {
+                        if overwrite_existing {
                             let overwrite_targets =
                                 SubtitleUtils::find_all_subtitle_files_in_listing(
                                     &job_path,
@@ -1000,51 +1061,69 @@ impl SubtitleDownloader {
                             }
                         }
 
-                        // Create cache directory and set environment variables to fix DBM cache issues on Windows
-                        let cache_dir = PythonManager::ensure_cache_dir()
-                            .unwrap_or_else(|_| std::env::temp_dir().join("subliminal_cache"));
+                        // Use a private cache for each concurrent Subliminal process.
+                        let cache_dir = match PythonManager::ensure_cache_dir() {
+                            Ok(directory) => directory,
+                            Err(error) => {
+                                if let Some(job) = jobs_clone
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .get_mut(idx)
+                                {
+                                    job.status = JobStatus::Failed(format!(
+                                        "Could not create job cache: {error}"
+                                    ));
+                                }
+                                return;
+                            }
+                        };
+                        let config_path = cache_dir.path().join("subliminal.toml");
+                        if let Err(error) =
+                            Utils::write_atomic(&config_path, config_content.as_bytes())
+                        {
+                            if let Some(job) = jobs_clone
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get_mut(idx)
+                            {
+                                job.status = JobStatus::Failed(format!(
+                                    "Could not prepare job configuration: {error}"
+                                ));
+                            }
+                            return;
+                        }
                         let mut env_vars = std::collections::HashMap::<String, String>::new();
                         env_vars.insert("PYTHONIOENCODING".to_string(), "utf-8".to_string());
-                        env_vars.insert(
-                            "SUBLIMINAL_CACHE_DIR".to_string(),
-                            cache_dir.to_string_lossy().to_string(),
-                        );
                         env_vars.insert("PYTHONHASHSEED".to_string(), "0".to_string());
 
-                        // Additional environment variables to help with Windows DBM cache issues
-                        #[cfg(windows)]
-                        {
-                            env_vars.insert(
-                                "SUBLIMINAL_CACHE_BACKEND".to_string(),
-                                "memory".to_string(),
-                            );
-                            env_vars.insert(
-                                "PYTHONPATH".to_string(),
-                                std::env::var("PYTHONPATH").unwrap_or_default(),
-                            );
-                        }
-                        // Build command arguments with provider and matching controls.
-                        // --debug is intentionally never added; it leaks provider tokens into stdout.
-                        let mut all_args: Vec<String> = Vec::new();
+                        // Do not add --debug; it can expose provider tokens.
+                        let mut all_args = vec![
+                            "--config".to_string(),
+                            config_path.to_string_lossy().into_owned(),
+                            "--cache-dir".to_string(),
+                            cache_dir.path().to_string_lossy().into_owned(),
+                        ];
                         if let Some(pages) = opensubtitles_max_pages_clone {
                             all_args
                                 .push("--provider.opensubtitlescom.max_result_pages".to_string());
                             all_args.push(pages.to_string());
                         }
                         all_args.push("download".to_string());
-                        if force_download || overwrite_existing {
-                            all_args.push("--force".to_string());
-                        }
+                        all_args.extend(subtitle_policy_args(
+                            force_download,
+                            overwrite_existing,
+                            exclude_hearing_impaired,
+                        ));
                         for provider in &providers_clone {
                             all_args.push("--provider".to_string());
                             all_args.push(provider.clone());
                         }
                         for refiner in &refiners_clone {
-                            if refiner == "metadata"
-                                && job_path.to_string_lossy().starts_with(r"\\")
-                            {
+                            let is_network_path = job_path.to_string_lossy().starts_with(r"\\")
+                                || (cfg!(target_os = "macos") && job_path.starts_with("/Volumes"));
+                            if refiner == "metadata" && is_network_path {
                                 info!(
-                                    "Skipping metadata refiner for UNC path: {}",
+                                    "Skipping metadata refiner for network path: {}",
                                     job_path.display()
                                 );
                                 continue;
@@ -1098,7 +1177,7 @@ impl SubtitleDownloader {
                                 }
                                 status_buffer.push_str(&String::from_utf8_lossy(bytes));
                                 if status_buffer.len() > MAX_STATUS_BUFFER_BYTES {
-                                    // Discard the whole stream so a secret key cannot be separated from its value.
+                                    // Drop oversized output so secrets stay together.
                                     status_buffer.clear();
                                     *suppress_status = true;
                                 }
@@ -1108,7 +1187,7 @@ impl SubtitleDownloader {
                             &env_vars,
                             &cancel_flag_clone,
                             &mut on_output,
-                            python_command_clone.as_deref(),
+                            &subliminal_command_clone,
                         );
 
                         for (stream, status_buffer, suppress_status) in [
@@ -1135,14 +1214,6 @@ impl SubtitleDownloader {
                             return;
                         }
 
-                        let embedded_phrases = [
-                            "embedded",
-                            "already exists",
-                            "no need to download",
-                            "subtitle(s) already present",
-                            "has embedded subtitles",
-                            "skipping",
-                        ];
                         let mut subtitle_paths = Vec::new();
                         let mut changed_subtitle_paths = Vec::new();
                         let job_status = match output {
@@ -1172,7 +1243,7 @@ impl SubtitleDownloader {
                                     let rejected_paths: Vec<PathBuf> = all_subtitle_paths
                                         .iter()
                                         .filter(|path| {
-                                            SubtitleUtils::is_hearing_impaired_path(path)
+                                            SubtitleUtils::is_hearing_impaired_path(&job_path, path)
                                         })
                                         .cloned()
                                         .collect();
@@ -1247,19 +1318,6 @@ impl SubtitleDownloader {
                                             } else {
                                                 JobStatus::Failed(format!("Embedded {} subtitles exist, but no external subtitles were found for {}", embedded_names, missing_names))
                                             }
-                                        } else if excluded_sdh_count == 0
-                                            && embedded_phrases
-                                                .iter()
-                                                .any(|phrase| combined_output.contains(phrase))
-                                        {
-                                            let lang_code = langs_clone
-                                                .first()
-                                                .cloned()
-                                                .unwrap_or_else(|| "unknown".to_string());
-                                            let lang_name =
-                                                SubtitleUtils::language_code_to_name(&lang_code)
-                                                    .to_string();
-                                            JobStatus::EmbeddedExists(format!("Embedded {} subtitles already exist (no external subtitles found online)", lang_name))
                                         } else {
                                             JobStatus::Failed("No subtitles found (no embedded or external subtitles available)".to_string())
                                         }
@@ -1343,7 +1401,7 @@ impl SubtitleDownloader {
                         }
                     });
 
-                    running_threads.push(handle);
+                    running_threads.push((idx, handle));
                 }
 
                 if cancel_flag.load(Ordering::SeqCst) {
@@ -1358,8 +1416,8 @@ impl SubtitleDownloader {
                 }
             }
 
-            for handle in running_threads {
-                let _ = handle.join();
+            for (idx, handle) in running_threads {
+                join_download_worker(idx, handle, &jobs_arc);
             }
             if let Ok(mut history) = scan_history.lock() {
                 if let Err(error) = history.save_if_dirty() {
@@ -1379,7 +1437,7 @@ impl SubtitleDownloader {
         }));
     }
 
-    /// Count jobs that are no longer pending or running (success, skipped, failed, etc.).
+    /// Count completed, running, and failed jobs.
     fn download_jobs_progress(jobs: &[DownloadJob]) -> (usize, usize, usize) {
         let mut completed_count = 0;
         let mut running_count = 0;
@@ -1398,10 +1456,9 @@ impl SubtitleDownloader {
         (completed_count, running_count, failed_count)
     }
 
-    /// Update cached jobs if needed (to avoid cloning every frame)
+    /// Update cached jobs when needed.
     pub fn update_cached_jobs(&mut self) {
         let now = std::time::Instant::now();
-        // Update cache every 500ms to improve performance
         if now.duration_since(self.last_jobs_update) >= std::time::Duration::from_millis(500) {
             if let Ok(jobs) = self.download_jobs.lock() {
                 self.cached_jobs = jobs.clone();
@@ -1410,16 +1467,15 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Check if all downloads are complete and update progress
+    /// Update download progress.
     pub fn check_download_completion(&mut self) {
         if !self.downloading {
             return;
         }
 
-        // Update cached jobs if needed
         self.update_cached_jobs();
 
-        // Use live job list for progress (cache can lag up to 500ms behind the worker thread).
+        // Use live jobs because the cache can lag.
         let (completed_count, running_count, failed_count) =
             if let Ok(jobs) = self.download_jobs.lock() {
                 Self::download_jobs_progress(&jobs)
@@ -1430,7 +1486,6 @@ impl SubtitleDownloader {
         let previous_completed = self.downloads_completed;
         self.downloads_completed = completed_count;
 
-        // Log progress changes
         if self.downloads_completed != previous_completed {
             debug!(
                 "Download progress: {}/{} completed, {} running, {} failed",
@@ -1438,7 +1493,6 @@ impl SubtitleDownloader {
             );
         }
 
-        // Check if download thread is finished
         if let Some(handle) = &self.download_thread_handle {
             if handle.is_finished() {
                 self.downloading = false;
@@ -1450,7 +1504,6 @@ impl SubtitleDownloader {
                     self.downloads_completed = finished;
                 }
 
-                // Count completed jobs using cached jobs
                 let failed_count = self
                     .cached_jobs
                     .iter()
@@ -1479,7 +1532,6 @@ impl SubtitleDownloader {
                     success_count, skipped_count, failed_count
                 );
             } else {
-                // Update status while downloading
                 if running_count > 0 {
                     self.status = format!(
                         "Running: {} completed, {} running, {} pending",
@@ -1492,7 +1544,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Handle the one-time startup dependency check result
+    /// Handle the startup dependency check.
     pub fn poll_init_check(&mut self) {
         if self.startup_phase != StartupPhase::Checking {
             return;
@@ -1515,10 +1567,10 @@ impl SubtitleDownloader {
         self.pipx_version = result.pipx_version;
         self.subliminal_installed = result.subliminal_installed;
         self.subliminal_version = result.subliminal_version;
+        self.subliminal_command = result.subliminal_command;
         self.ffmpeg_installed = result.ffmpeg_installed;
         self.homebrew_installed = result.homebrew_installed;
 
-        // Auto-install subliminal if python (and pipx on Linux) are ready
         if self.python_installed && self.pipx_installed && !self.subliminal_installed {
             info!("Starting automatic Subliminal installation");
             self.startup_phase = StartupPhase::Installing;
@@ -1552,8 +1604,9 @@ impl SubtitleDownloader {
 
                 #[cfg(windows)]
                 {
-                    let sub = PythonManager::is_subliminal_installed();
-                    if tx.send((true, sub, true, false)).is_err() {
+                    let result = probe_subliminal(None);
+                    let sub = result.installed;
+                    if tx.send((true, result, true, false)).is_err() {
                         break;
                     }
                     if sub {
@@ -1563,10 +1616,11 @@ impl SubtitleDownloader {
                 #[cfg(target_os = "macos")]
                 {
                     let pipx = PythonManager::_pipx_available();
-                    let sub = PythonManager::is_subliminal_installed();
+                    let result = probe_subliminal(None);
+                    let sub = result.installed;
                     let ffmpeg = PythonManager::is_ffmpeg_installed();
                     let homebrew = PythonManager::is_homebrew_installed();
-                    if tx.send((pipx, sub, ffmpeg, homebrew)).is_err() {
+                    if tx.send((pipx, result, ffmpeg, homebrew)).is_err() {
                         break;
                     }
                     if pipx && sub && ffmpeg {
@@ -1576,13 +1630,14 @@ impl SubtitleDownloader {
                 #[cfg(target_os = "linux")]
                 {
                     let pipx = PythonManager::_pipx_available();
-                    let sub = if pipx {
-                        PythonManager::is_subliminal_installed()
+                    let result = if pipx {
+                        probe_subliminal(None)
                     } else {
-                        false
+                        SubliminalInstallResult::default()
                     };
+                    let sub = result.installed;
                     let ffmpeg = PythonManager::is_ffmpeg_installed();
-                    if tx.send((pipx, sub, ffmpeg, false)).is_err() {
+                    if tx.send((pipx, result, ffmpeg, false)).is_err() {
                         break;
                     }
                     if pipx && sub && ffmpeg {
@@ -1590,7 +1645,7 @@ impl SubtitleDownloader {
                     }
                 }
 
-                // Sleep in short intervals so we notice shutdown quickly
+                // Check shutdown while waiting.
                 for _ in 0..50 {
                     if bg_shutdown.load(Ordering::Relaxed) {
                         return;
@@ -1603,7 +1658,7 @@ impl SubtitleDownloader {
         self.background_check_receiver = Some(rx);
     }
 
-    /// Refresh installation status using background thread results
+    /// Refresh installation status.
     pub fn refresh_installation_status(&mut self) {
         if !self.startup_phase.is_terminal() {
             return;
@@ -1615,9 +1670,16 @@ impl SubtitleDownloader {
                 last_status = Some(status);
             }
         }
-        if let Some((_pipx_available, subliminal_installed, ffmpeg_installed, homebrew_installed)) =
+        if let Some((_pipx_available, subliminal, ffmpeg_installed, homebrew_installed)) =
             last_status
         {
+            let SubliminalInstallResult {
+                installed: subliminal_installed,
+                version,
+                command,
+            } = subliminal;
+            self.subliminal_version = version;
+            self.subliminal_command = command;
             let _old_pipx = self.pipx_installed;
             let old_subliminal = self.subliminal_installed;
             let old_ffmpeg = self.ffmpeg_installed;
@@ -1651,7 +1713,6 @@ impl SubtitleDownloader {
                 }
             }
 
-            // If pipx became available (Linux only), start installing subliminal automatically
             #[cfg(target_os = "linux")]
             {
                 if !_old_pipx && self.pipx_installed && !self.subliminal_installed {
@@ -1663,14 +1724,12 @@ impl SubtitleDownloader {
                 }
             }
 
-            // If subliminal became available, update status
             if (!old_subliminal || !old_ffmpeg) && self.dependencies_ready() {
                 info!("Subliminal became available");
                 self.status =
                     "All dependencies installed. Ready to download subtitles.".to_string();
             }
 
-            // Stop background checking and free resources
             #[cfg(any(windows, target_os = "macos"))]
             {
                 if self.dependencies_ready() {
@@ -1691,7 +1750,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Handle Python and Subliminal installation states
+    /// Handle installation states.
     pub fn handle_installation_states(&mut self) {
         if self.installing_python {
             if let Some(result) = self
@@ -1704,7 +1763,6 @@ impl SubtitleDownloader {
                 match result {
                     Ok(_) => {
                         info!("Python installation completed successfully");
-                        // Refresh environment to pick up new Python installation
                         if let Err(e) = PythonManager::refresh_environment() {
                             error!("Failed to refresh environment: {}", e);
                         }
@@ -1720,7 +1778,6 @@ impl SubtitleDownloader {
                             "Python installed successfully. Installing Subliminal...".to_string();
                         self.subliminal_installed = false;
 
-                        // Start installing subliminal automatically
                         self.installing_subliminal = true;
                         let result_ptr = Arc::clone(&self.subliminal_install_result);
                         spawn_subliminal_install(result_ptr, self.python_command.clone());
@@ -1743,10 +1800,11 @@ impl SubtitleDownloader {
                 let initial_startup_install = self.startup_phase == StartupPhase::Installing;
                 self.installing_subliminal = false;
                 match verified_subliminal_state(result) {
-                    Ok((installed, version)) => {
+                    Ok((installed, version, command)) => {
                         info!("Subliminal installation completed successfully");
                         self.subliminal_installed = installed;
                         self.subliminal_version = version;
+                        self.subliminal_command = command;
                         self.status = "Subliminal installed.".to_string();
                     }
                     Err(e) => {
@@ -1761,7 +1819,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Poll for version check results
+    /// Poll for update results.
     pub fn poll_version_check(&mut self) {
         if self.version_checked {
             return;
@@ -1774,7 +1832,7 @@ impl SubtitleDownloader {
         }
     }
 
-    /// Compare two version strings (ignoring 'v' prefix). Returns true if current < latest.
+    /// Check whether the current version is older.
     pub fn is_outdated(current: &str, latest: &str) -> bool {
         let parse = |s: &str| {
             s.trim_start_matches('v')
@@ -1795,7 +1853,6 @@ impl SubtitleDownloader {
         c.len() < l.len() // e.g. 1.0 < 1.0.1
     }
 
-    // Getters for GUI access
     pub fn is_installing_python(&self) -> bool {
         self.installing_python
     }
@@ -1900,7 +1957,6 @@ impl SubtitleDownloader {
         }
     }
 
-    // Setters for GUI access
     pub fn set_installing_python(&mut self, installing: bool) {
         self.installing_python = installing;
     }
@@ -1923,7 +1979,6 @@ impl SubtitleDownloader {
         self.matching_options_open
     }
 
-    // Mutable access to settings
     pub fn get_selected_languages_mut(&mut self) -> &mut Vec<String> {
         &mut self.selected_languages
     }
@@ -1954,14 +2009,16 @@ impl SubtitleDownloader {
     pub fn get_concurrent_downloads_mut(&mut self) -> &mut usize {
         &mut self.concurrent_downloads
     }
-    pub fn get_scan_done_receiver_mut(&mut self) -> &mut Option<Receiver<(usize, usize)>> {
+    pub fn get_scan_done_receiver_mut(
+        &mut self,
+    ) -> &mut Option<Receiver<(usize, usize, Settings)>> {
         &mut self.scan_done_receiver
     }
     pub fn get_shutdown_flag(&self) -> &Arc<AtomicBool> {
         &self.shutdown_flag
     }
 
-    /// Start Subliminal installation in a background thread.
+    /// Start Subliminal installation.
     pub fn start_subliminal_install(&mut self) {
         if self.installing_subliminal || !self.python_installed {
             return;
@@ -1977,11 +2034,11 @@ impl SubtitleDownloader {
         spawn_subliminal_install(result_ptr, self.python_command.clone());
     }
 
-    /// Start Python installation in a background thread (Windows only)
+    /// Start Python installation on Windows.
     #[cfg(windows)]
     pub fn start_python_install(&mut self) {
         if self.installing_python {
-            return; // Already installing
+            return;
         }
         self.installing_python = true;
         self.status =
@@ -2006,9 +2063,7 @@ impl SubtitleDownloader {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        escape_toml_string, latest_non_empty_line, redact_sensitive, verified_subliminal_state,
-    };
+    use super::{latest_non_empty_line, redact_sensitive, verified_subliminal_state};
     use crate::data_structures::SubliminalInstallResult;
 
     #[test]
@@ -2016,10 +2071,11 @@ mod tests {
         let state = verified_subliminal_state(Ok(SubliminalInstallResult {
             installed: true,
             version: Some("subliminal 2.4.0".to_string()),
+            command: None,
         }))
         .expect("verified installation should produce dependency state");
 
-        assert_eq!(state, (true, Some("subliminal 2.4.0".to_string())));
+        assert_eq!(state, (true, Some("subliminal 2.4.0".to_string()), None));
     }
 
     #[test]
@@ -2039,7 +2095,89 @@ mod tests {
     }
 
     #[test]
-    fn toml_escaping_handles_special_characters() {
-        assert_eq!(escape_toml_string("a\\b\"c\nd\te"), "a\\\\b\\\"c\\nd\\te");
+    fn redaction_accepts_empty_and_truncated_values() {
+        for text in [
+            "token=\"\"",
+            "password=''",
+            "apikey=",
+            "token=,",
+            "token=\"",
+        ] {
+            assert_eq!(redact_sensitive(text), text);
+        }
+        assert_eq!(
+            redact_sensitive("token=\"\" password=secret"),
+            "token=\"\" password=***"
+        );
+        assert_eq!(redact_sensitive("token=\"unterminated"), "token=\"***");
+    }
+
+    #[test]
+    fn panicked_worker_becomes_a_failed_job() {
+        use crate::data_structures::{DownloadJob, JobStatus};
+        let jobs = std::sync::Arc::new(std::sync::Mutex::new(vec![DownloadJob {
+            video_path: "Movie.mkv".into(),
+            status: JobStatus::Running,
+            output: String::new(),
+            subtitle_paths: Vec::new(),
+        }]));
+        super::join_download_worker(0, std::thread::spawn(|| panic!("fixture failure")), &jobs);
+        assert!(matches!(
+            jobs.lock().unwrap()[0].status,
+            JobStatus::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn subtitle_policies_are_independent() {
+        for ignore_embedded in [false, true] {
+            for overwrite in [false, true] {
+                let args = super::subtitle_policy_args(ignore_embedded, overwrite, true);
+                assert_eq!(
+                    args.iter().any(|arg| arg == "--force-embedded-subtitles"),
+                    ignore_embedded
+                );
+                assert_eq!(
+                    args.iter().any(|arg| arg == "--force-external-subtitles"),
+                    overwrite
+                );
+                assert!(!args.iter().any(|arg| arg == "--force"));
+                assert!(args.iter().any(|arg| arg == "--language-type-suffix"));
+                assert!(args.iter().any(|arg| arg == "--no-hearing-impaired"));
+            }
+        }
+    }
+
+    #[test]
+    fn credential_sync_preserves_unrelated_toml_and_refuses_invalid_input() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("subliminal.toml");
+        std::fs::write(
+            &path,
+            "# keep\n[download]\nforce = true\n[provider.other]\nsetting = 'preserved'\n",
+        )
+        .unwrap();
+        let value = "fixture\\\"\n\t";
+        let result = super::sync_credentials_at(&path, "", value, "").unwrap();
+        let doc = result.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(
+            doc["provider"]["opensubtitlescom"]["password"].as_str(),
+            Some(value)
+        );
+        assert_eq!(
+            doc["provider"]["other"]["setting"].as_str(),
+            Some("preserved")
+        );
+        assert!(result.starts_with("# keep"));
+        let snapshot = super::session_config(&result)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(snapshot["download"]["force"].as_bool(), Some(false));
+        assert_eq!(doc["download"]["force"].as_bool(), Some(true));
+        std::fs::write(&path, "[invalid").unwrap();
+        assert!(super::sync_credentials_at(&path, "", "", "").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[invalid");
+        assert!(super::sync_credentials_at(folder.path(), "", "", "").is_err());
     }
 }

@@ -1347,6 +1347,7 @@ impl SubtitleDownloader {
 
 impl eframe::App for SubtitleDownloader {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::startup::frame_rendered();
         let ctx = ui.ctx().clone();
         ctx.style_mut_of(egui::Theme::Dark, |style| {
             style.spacing.scroll.floating = false;
@@ -1451,7 +1452,7 @@ impl eframe::App for SubtitleDownloader {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.prepare_for_exit();
 
         self.background_check_receiver = None;

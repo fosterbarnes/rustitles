@@ -1,6 +1,5 @@
 //! Python and Subliminal installation utilities.
 
-use log::{error, info, warn};
 use std::env;
 #[cfg(windows)]
 use std::io::Write;
@@ -9,8 +8,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
-// Logging macros
-use crate::debug;
+// Logging macros (routed to rustitles_log.txt)
+use crate::{debug, error, info, warn};
 
 #[cfg(windows)]
 use std::fs::File;
@@ -23,17 +22,11 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 #[cfg(windows)]
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-};
-#[cfg(windows)]
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-#[cfg(windows)]
-use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
@@ -43,9 +36,32 @@ use winreg::enums::*;
 #[cfg(windows)]
 use winreg::RegKey;
 
-// Unix imports
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use dirs;
+/// Expand Windows-style `%NAME%` references; unknown names are left as-is.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn expand_env_vars(value: &str) -> String {
+    let mut expanded = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            expanded.push_str(&rest[start..]);
+            return expanded;
+        };
+        let name = &after[..end];
+        match std::env::var(name) {
+            Ok(var) if !name.is_empty() => expanded.push_str(&var),
+            _ => {
+                expanded.push('%');
+                expanded.push_str(name);
+                expanded.push('%');
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.push_str(rest);
+    expanded
+}
 
 /// Python and Subliminal utilities.
 pub struct PythonManager;
@@ -252,43 +268,7 @@ impl ProcessJob {
             let _ = unsafe { CloseHandle(handle) };
             return Err(io::Error::other(error));
         }
-        if let Err(error) = Self::resume_child(child.id()) {
-            let _ = unsafe { CloseHandle(handle) };
-            return Err(error);
-        }
         Ok(Self { handle })
-    }
-
-    fn resume_child(pid: u32) -> io::Result<()> {
-        let snapshot =
-            unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(io::Error::other)?;
-        let mut entry = THREADENTRY32 {
-            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-            ..Default::default()
-        };
-        if let Err(error) = unsafe { Thread32First(snapshot, &mut entry) } {
-            let _ = unsafe { CloseHandle(snapshot) };
-            return Err(io::Error::other(error));
-        }
-        loop {
-            if entry.th32OwnerProcessID == pid {
-                let thread =
-                    unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) }
-                        .map_err(io::Error::other)?;
-                let resume_result = unsafe { ResumeThread(thread) };
-                let close_result = unsafe { CloseHandle(thread) };
-                let _ = unsafe { CloseHandle(snapshot) };
-                close_result.map_err(io::Error::other)?;
-                if resume_result == u32::MAX {
-                    return Err(io::Error::last_os_error());
-                }
-                return Ok(());
-            }
-            if let Err(error) = unsafe { Thread32Next(snapshot, &mut entry) } {
-                let _ = unsafe { CloseHandle(snapshot) };
-                return Err(io::Error::other(error));
-            }
-        }
     }
 
     fn terminate(&self) -> io::Result<()> {
@@ -305,8 +285,9 @@ impl Drop for ProcessJob {
 
 struct OwnedChild {
     child: std::process::Child,
+    /// Kills the process tree on cancel or app exit; None if the job could not be attached.
     #[cfg(windows)]
-    job: ProcessJob,
+    job: Option<ProcessJob>,
 }
 
 impl OwnedChild {
@@ -316,17 +297,11 @@ impl OwnedChild {
         env_vars: &std::collections::HashMap<String, String>,
     ) -> io::Result<Self> {
         let child = Self::spawn_command(cmd, args, env_vars).spawn()?;
+        // Attach right after spawn; the child cannot start descendants that quickly.
         #[cfg(windows)]
-        let mut child = child;
-        #[cfg(windows)]
-        let job = match ProcessJob::attach(&child) {
-            Ok(job) => job,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
+        let job = ProcessJob::attach(&child)
+            .inspect_err(|error| warn!("Running {} without a job object: {}", cmd, error))
+            .ok();
         Ok(Self {
             child,
             #[cfg(windows)]
@@ -349,8 +324,7 @@ impl OwnedChild {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            use windows::Win32::System::Threading::CREATE_SUSPENDED;
-            command.creation_flags(0x08000000 | CREATE_SUSPENDED.0); // Hide the console and assign before execution.
+            command.creation_flags(0x08000000); // Hide the console.
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -371,7 +345,11 @@ impl OwnedChild {
 
     fn stop(&mut self) -> io::Result<()> {
         #[cfg(windows)]
-        self.job.terminate()?;
+        if let Some(job) = &self.job {
+            if let Err(error) = job.terminate() {
+                warn!("Failed to terminate job object: {}", error);
+            }
+        }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
@@ -615,12 +593,15 @@ impl PythonManager {
     }
 
     /// Install Subliminal.
-    pub fn install_subliminal() -> Result<(), String> {
+    pub fn install_subliminal(preferred_python: Option<&str>) -> Result<(), String> {
+        #[cfg(not(windows))]
+        let _ = preferred_python;
+
         #[cfg(windows)]
         {
             info!("Installing Subliminal via pip on Windows");
             let mut last_error = None;
-            for cmd in &["python", "py", "python3"] {
+            for cmd in Self::python_probe_commands(preferred_python) {
                 match Self::run_install_command_hidden(
                     cmd,
                     &["-m", "pip", "install", "--upgrade", "subliminal>=2.4.0"],
@@ -862,7 +843,11 @@ impl PythonManager {
             }
 
             if changed {
-                env.set_value("Path", &current_path)
+                // Keep REG_EXPAND_SZ so entries like %USERPROFILE%\... keep working.
+                use winreg::types::ToRegValue;
+                let mut value = current_path.to_reg_value();
+                value.vtype = REG_EXPAND_SZ;
+                env.set_raw_value("Path", &value)
                     .map_err(|e| format!("Failed to set PATH: {}", e))?;
 
                 unsafe {
@@ -966,7 +951,8 @@ impl PythonManager {
                 format!("{system_path};{user_path}")
             };
 
-            std::env::set_var("PATH", combined_path);
+            // Registry PATH values hold unexpanded entries such as %SystemRoot%.
+            std::env::set_var("PATH", expand_env_vars(&combined_path));
 
             Ok(())
         }
@@ -1068,8 +1054,13 @@ impl PythonManager {
             })?;
 
         info!("Latest Python version from API: {}", version);
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "amd64"
+        };
         Ok(format!(
-            "https://www.python.org/ftp/python/{version}/python-{version}-amd64.exe"
+            "https://www.python.org/ftp/python/{version}/python-{version}-{arch}.exe"
         ))
     }
 
@@ -1105,7 +1096,8 @@ impl PythonManager {
         let mut command = Command::new(_installer_path);
         command.args([
             "/quiet",
-            "InstallAllUsers=1",
+            // Per-user install: no UAC prompt from a non-admin app.
+            "InstallAllUsers=0",
             "PrependPath=1",
             "Include_pip=1",
         ]);
@@ -1483,6 +1475,16 @@ impl PythonManager {
 mod tests {
     use super::{append_capped, PythonManager, MAX_CAPTURED_OUTPUT_BYTES};
     use std::time::Duration;
+
+    #[test]
+    fn expands_known_env_vars_and_keeps_unknown_ones() {
+        let path = std::env::var("PATH").unwrap();
+        assert_eq!(super::expand_env_vars("a;%PATH%;b"), format!("a;{path};b"));
+        assert_eq!(
+            super::expand_env_vars("%RUSTITLES_NO_SUCH_VAR%\\x;100%"),
+            "%RUSTITLES_NO_SUCH_VAR%\\x;100%"
+        );
+    }
 
     #[test]
     fn requires_a_recognized_stable_subliminal_version() {

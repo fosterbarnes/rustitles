@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 /// The current application version.
-pub const APP_VERSION: &str = "2.4.0";
+pub const APP_VERSION: &str = "2.4.1";
 
 /// Video file extensions supported by scans.
 pub static VIDEO_EXTENSIONS: &[&str] = &[

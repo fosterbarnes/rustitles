@@ -245,32 +245,32 @@ pub fn log_message(level: &str, message: &str) {
 // Logging macros
 #[macro_export]
 macro_rules! info {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         $crate::logging::log_message("INFO", &format!($($arg)*));
-    };
+    }};
 }
 
 #[macro_export]
 macro_rules! warn {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         $crate::logging::log_message("WARN", &format!($($arg)*));
-    };
+    }};
 }
 
 #[macro_export]
 macro_rules! error {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         $crate::logging::log_message("ERROR", &format!($($arg)*));
-    };
+    }};
 }
 
 #[macro_export]
 macro_rules! debug {
-    ($($arg:tt)*) => {
+    ($($arg:tt)*) => {{
         if $crate::logging::is_debug_enabled() {
             $crate::logging::log_message("DEBUG", &format!($($arg)*));
         }
-    };
+    }};
 }
 
 #[cfg(test)]

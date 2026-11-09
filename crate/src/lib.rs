@@ -9,6 +9,7 @@ pub mod logging;
 pub mod python_manager;
 pub mod scan_history;
 pub mod settings;
+pub mod startup;
 pub mod subtitle_utils;
 
 // Re-export shared items

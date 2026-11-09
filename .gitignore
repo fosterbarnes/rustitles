@@ -2,6 +2,7 @@ target/
 .installer/Output/
 rustitles_log.txt
 rustitles_settings.json
+rustitles_startup.json
 System Volume Information
 *.code-workspace
 *.lock

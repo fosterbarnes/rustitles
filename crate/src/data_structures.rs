@@ -137,6 +137,7 @@ pub struct SubtitleDownloader {
 }
 
 /// Background startup dependency result.
+#[derive(Default)]
 pub struct InitCheckResult {
     pub python_command: Option<String>,
     pub python_version: Option<String>,

@@ -418,7 +418,7 @@ fn subtitle_policy_args(ignore_embedded: bool, overwrite: bool, exclude_sdh: boo
 fn install_subliminal_and_verify(
     python_command: Option<String>,
 ) -> Result<SubliminalInstallResult, String> {
-    PythonManager::install_subliminal()?;
+    PythonManager::install_subliminal(python_command.as_deref())?;
     PythonManager::add_scripts_to_path()
         .map_err(|e| format!("Subliminal installed, but failed to update PATH: {}", e))?;
     PythonManager::refresh_environment().map_err(|e| {
@@ -441,7 +441,9 @@ fn spawn_subliminal_install(
     python_command: Option<String>,
 ) {
     thread::spawn(move || {
-        let result = install_subliminal_and_verify(python_command);
+        // Always report a result so startup cannot wait forever on a crashed installer.
+        let result = std::panic::catch_unwind(|| install_subliminal_and_verify(python_command))
+            .unwrap_or_else(|_| Err("Subliminal installer crashed; see the log".to_string()));
         *result_ptr.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
     });
 }
@@ -1550,13 +1552,14 @@ impl SubtitleDownloader {
             return;
         }
 
-        let result = match self
-            .init_check_receiver
-            .as_ref()
-            .and_then(|rx| rx.try_recv().ok())
-        {
-            Some(r) => r,
-            None => return,
+        let result = match self.init_check_receiver.as_ref().map(|rx| rx.try_recv()) {
+            Some(Ok(result)) => result,
+            Some(Err(mpsc::TryRecvError::Empty)) => return,
+            // The probe thread died; continue so the splash cannot hang forever.
+            Some(Err(mpsc::TryRecvError::Disconnected)) | None => {
+                error!("Startup dependency check stopped unexpectedly");
+                InitCheckResult::default()
+            }
         };
         self.init_check_receiver = None;
 
@@ -2041,8 +2044,7 @@ impl SubtitleDownloader {
             return;
         }
         self.installing_python = true;
-        self.status =
-            "Installing Python... Check your taskbar for a UAC prompt (shield icon)".to_string();
+        self.status = "Installing Python...".to_string();
         let result_ptr = self.python_install_result.clone();
         std::thread::spawn(move || {
             let result = (|| {

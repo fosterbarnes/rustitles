@@ -10,6 +10,7 @@ mod logging;
 mod python_manager;
 mod scan_history;
 mod settings;
+mod startup;
 mod subtitle_utils;
 
 // Re-export shared items
@@ -45,7 +46,29 @@ fn initialize_app() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("Starting Rustitles application");
+    install_panic_hook();
     Ok(())
+}
+
+/// Log panics; the GUI subsystem has no stderr.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|panic| {
+        let thread = std::thread::current();
+        error!(
+            "Panic on thread '{}': {}\n{}",
+            thread.name().unwrap_or("unnamed"),
+            panic,
+            std::backtrace::Backtrace::force_capture()
+        );
+    }));
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
 }
 
 /// Load the application icon.
@@ -75,7 +98,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_mac_icon.png"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -85,7 +108,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -95,7 +118,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -114,7 +137,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -124,7 +147,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -169,7 +192,10 @@ fn calculate_window_position(window_size: [f32; 2]) -> egui::Pos2 {
 }
 
 /// Configure the application window.
-fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions {
+fn configure_window(
+    icon_data: Option<egui::IconData>,
+    renderer: startup::RendererKind,
+) -> eframe::NativeOptions {
     let window_size = WINDOW_SIZE;
     let initial_position = calculate_window_position(window_size);
 
@@ -187,6 +213,7 @@ fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions 
     eframe::NativeOptions {
         viewport: viewport_builder,
         persist_window: true,
+        renderer: renderer.into(),
         ..Default::default()
     }
 }
@@ -250,31 +277,47 @@ fn main() {
     // Load icon.
     let icon_data = load_app_icon();
 
-    // Configure window.
-    let native_options = configure_window(icon_data);
+    // Choose the renderer and configure the window.
+    let renderer = startup::begin();
+    let native_options = configure_window(icon_data, renderer);
 
     info!(
         "Initializing GUI with window size: {}x{}",
         WINDOW_SIZE[0], WINDOW_SIZE[1]
     );
 
-    // Run the application.
-    let result = eframe::run_native(
-        "Rustitles",
-        native_options,
-        Box::new(|cc| {
-            // Configure visuals.
-            configure_visuals(&cc.egui_ctx);
-            configure_fonts(&cc.egui_ctx);
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            info!("GUI initialized successfully");
-            Ok(Box::new(SubtitleDownloader::default()))
-        }),
-    );
+    // Run the application. Catch panics so they can be reported after the event loop ends.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "Rustitles",
+            native_options,
+            Box::new(|cc| {
+                // Configure visuals.
+                configure_visuals(&cc.egui_ctx);
+                configure_fonts(&cc.egui_ctx);
+                egui_extras::install_image_loaders(&cc.egui_ctx);
+                info!("GUI initialized successfully");
+                Ok(Box::new(SubtitleDownloader::default()))
+            }),
+        )
+    }));
 
+    let failure = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error.to_string()),
+        Err(payload) => Some(format!("panic: {}", panic_message(payload.as_ref()))),
+    };
+
+    let Some(reason) = failure else {
+        cleanup_on_exit();
+        return;
+    };
+
+    error!("Rustitles stopped with an error: {}", reason);
+    let relaunched = !startup::is_confirmed() && startup::relaunch_with_other_renderer(&reason);
     cleanup_on_exit();
-
-    if let Err(error) = result {
-        eprintln!("Failed to start eframe: {error}");
+    if !relaunched {
+        startup::show_fatal_dialog(&reason);
+        std::process::exit(1);
     }
 }

@@ -1,3 +1,14 @@
+2.4.1 Update
+
+- Fix Rustitles closing silently on launch on some Windows PCs: it now starts with OpenGL like 2.3 and automatically retries with the other graphics backend if one fails.
+- Show an error dialog with the log file location instead of closing silently, and log crashes.
+- Python and Subliminal install errors are now written to the log.
+- Install Python per user (no admin prompt) and use the ARM64 Python installer on ARM64 Windows.
+- Install Subliminal with the Python that Rustitles detected.
+- More reliable dependency detection on Windows.
+- Fix the user PATH losing %VARIABLE% entries (e.g. WindowsApps) after Rustitles added Python's Scripts folder, and fix py/system tools not being found after startup.
+- Fix a possible endless startup splash if the dependency check or Subliminal install crashed.
+
 2.4.0 Update
 
 - Improve subtitle matching by using multiple providers and matching refiners.

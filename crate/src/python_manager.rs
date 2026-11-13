@@ -30,10 +30,6 @@ use winreg::enums::*;
 #[cfg(windows)]
 use winreg::RegKey;
 
-// Unix-specific imports (Linux and macOS)
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use dirs;
-
 /// Python and Subliminal installation and management utilities
 pub struct PythonManager;
 

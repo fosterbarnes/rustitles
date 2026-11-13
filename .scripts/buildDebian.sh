@@ -32,7 +32,7 @@ if ! pkg-config --exists openssl; then
 fi
 
 if [ "$(dpkg --print-architecture)" != "amd64" ] || [ "$(uname -m)" != "x86_64" ]; then
-    echo "Error: buildDebian.sh requires a native amd64 host." >&2
+    echo "Error: buildDebian.sh requires an amd64 environment. Run buildLinux.sh, which provides one." >&2
     exit 1
 fi
 
@@ -93,11 +93,16 @@ LINUXDEPLOY_PATH="$TOOL_DIR/linuxdeploy-x86_64.AppImage"
 echo "Downloading pinned linuxdeploy ${LINUXDEPLOY_VERSION}..."
 curl --fail --location --silent --show-error --retry 3 "$LINUXDEPLOY_URL" -o "$LINUXDEPLOY_PATH"
 printf '%s  %s\n' "$LINUXDEPLOY_SHA256" "$LINUXDEPLOY_PATH" | sha256sum --check --status -
+# Emulators registered through binfmt_misc (Rosetta, qemu) refuse ELF files with the AppImage
+# magic in header bytes 8-10. Clearing it does not change how the tool runs.
+dd if=/dev/zero of="$LINUXDEPLOY_PATH" bs=1 seek=8 count=3 conv=notrunc status=none
 chmod 755 "$LINUXDEPLOY_PATH"
 
 APPDIR="$TOOL_DIR/AppDir"
-ICON_PATH="$TOOL_DIR/256x256/rustitles.png"
-mkdir -p "$APPDIR" "$(dirname "$ICON_PATH")"
+DESKTOP_PATH="$TOOL_DIR/rustitles.desktop"
+ICON_PATH="$TOOL_DIR/rustitles.png"
+mkdir -p "$APPDIR"
+sed 's/\r$//' "$CRATE_DIR/resources/rustitles.desktop" > "$DESKTOP_PATH"
 cp -f "$CRATE_DIR/resources/rustitles_icon_256.png" "$ICON_PATH"
 
 echo "Building AppImage..."
@@ -109,7 +114,7 @@ LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
 "$LINUXDEPLOY_PATH" \
     --appdir "$APPDIR" \
     --executable "$ROOT_FOLDER/target/release/rustitles" \
-    --desktop-file "$CRATE_DIR/resources/rustitles.desktop" \
+    --desktop-file "$DESKTOP_PATH" \
     --icon-file "$ICON_PATH" \
     --output appimage
 

@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 if ($Help) {
     Write-Host 'buildInstaller.ps1 [-Architecture x64|arm64]'
     Write-Host 'Windows: portable executables and Inno Setup installers.'
-    Write-Host 'Linux: native Debian AppImage and .deb packages.'
+    Write-Host 'Linux: Debian amd64 AppImage and .deb, built in a podman container.'
     Write-Host 'macOS: native universal app and ZIP archive.'
     return
 }

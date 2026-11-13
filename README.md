@@ -14,24 +14,24 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   <tbody>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles_win_x64_installer.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_x64_installer.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/x64Installer.svg" width="180" height="auto" alt="x64 installer"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles_win_x64_portable.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_x64_portable.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/x64Portable.svg" width="180" height="auto" alt="x64 portable"/>
         </a>
       </td>
     </tr>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles_win_ARM64_installer.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_ARM64_installer.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/arm64.svg" width="180" height="auto" alt="ARM64 installer"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles_win_ARM64_portable.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_ARM64_portable.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/arm64Portable.svg" width="180" height="auto" alt="ARM64 portable"/>
         </a>
       </td>
@@ -45,12 +45,12 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   <tbody>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles_app_macOS.zip">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_app_macOS.zip">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/appleArm.svg" width="180" height="auto" alt="Universal macOS app"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles_app_macOS.zip">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_app_macOS.zip">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/appleIntel.svg" width="180" height="auto" alt="Universal macOS app"/>
         </a>
       </td>
@@ -64,12 +64,12 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   <tbody>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles.deb">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles.deb">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/refs/heads/main/btn/deb.svg" width="180" height="auto" alt="Linux DEB package"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.0/rustitles.AppImage">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles.AppImage">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/refs/heads/main/btn/appImage.svg" width="180" height="auto" alt="Linux AppImage"/>
         </a>
       </td>
@@ -77,12 +77,11 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   </tbody>
 </table>
 
-Or install the `.deb` directly from the terminal. This command will also automatically launch it after installing:
+Or install the `.deb` directly from the terminal:
 
 ```bash
 wget https://github.com/fosterbarnes/rustitles/releases/latest/download/rustitles.deb
 sudo apt install ./rustitles.deb
-rustitles
 ```
 
 <!-- End Quick Reference -->
@@ -100,13 +99,10 @@ Select your desired language(s)
 
 Set your maximum concurrent downloads or leave this number as default. This is the amount of subtitles that will be downloaded at the same time. (More concurrent downloads = more Python processes = more RAM used)
 
-Select the folder with your movies/tv-shows that you want subtitles for
+Select the folder with your media that you want subtitles for
 
 Wait for the processes to complete
 
-### Virtual Machines
-
-Certain OpenGL calls can cause issues in Windows VMs. Mesa 3d (an open source implementation of OpenGL) can be used to fix this issue on certain VMs, this fix works for me in VirtualBox. Just download [mesa3d-25.2.1-release-mingw.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-mingw.7z) or [mesa3d-25.2.1-release-msvc.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-msvc.7z) from <https://github.com/pal1000/mesa-dist-win/releases> unzip, and then run `systemwidedeploy.cmd` as admin, selecting "1. Core desktop OpenGL drivers".
 
 ### Extra Subliminal Matching Options
 
@@ -168,6 +164,11 @@ Any app that isn't code-signed has a chance of tripping your antivirus (code sig
 [How to set exclusions for Windows Defender](https://www.elevenforum.com/t/add-or-remove-exclusions-for-microsoft-defender-antivirus-in-windows-11.8797/#One)
 
 Any detections seen can be false positives because the app checks for dependencies and can install Python on Windows if needed. That being said, ALWAYS be cautious when running scripts or .exe's from random people on GitHub.
+
+### Virtual Machines
+
+Certain OpenGL calls can cause issues in Windows VMs. Mesa 3d (an open source implementation of OpenGL) can be used to fix this issue on certain VMs, this fix works for me in VirtualBox. Just download [mesa3d-25.2.1-release-mingw.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-mingw.7z) or [mesa3d-25.2.1-release-msvc.7z](https://github.com/pal1000/mesa-dist-win/releases/download/25.2.1/mesa3d-25.2.1-release-msvc.7z) from <https://github.com/pal1000/mesa-dist-win/releases> unzip, and then run `systemwidedeploy.cmd` as admin, selecting "1. Core desktop OpenGL drivers".
+
 
 ## Support
 

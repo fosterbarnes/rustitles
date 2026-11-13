@@ -1487,7 +1487,7 @@ impl eframe::App for SubtitleDownloader {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.prepare_for_exit();
 
         // Drop the receiver so the background thread's send() also fails immediately

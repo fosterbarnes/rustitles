@@ -1,18 +1,12 @@
-2.4.0 Update
+v2.4.2 eldenVolley [fix > Windows and Linux startup failures]
 
-- Improve subtitle matching by using multiple providers and matching refiners.
-- Optional minimum subtitle match score.
-- Added Serbian language support and clearer multi-language embedded-subtitle results.
-- Improve subtitle discovery for uppercase extensions and common caption markers.
-- Add clearer dependency status.
-- Update lots of dependencies
-- Improve download progress, cancellation, rescanning, and failure reporting.
-- Remember successfully scanned videos and add Skip scanned media option to avoid re-downloading.
-- Back up existing sidecar subtitles to numbered .bak files before overwrite.
-- Ignore Plex local-extras folders (Behind The Scenes, Deleted Scenes, Featurettes, etc) with a toggle.
-- Detect FFmpeg and Homebrew status and show copyable install commands on Linux and macOS.
-- Add animated startup splash, larger default window, and refreshed icon and branding.
-- Overhaul packaging: unified .scripts builds, native deb and AppImage via cargo-deb, and optimized release profile (LTO, strip).
-- Faster and more reliable scanning: parallel directory walk, cached folder listings, and case-insensitive extension lookup.
-- Harden Subliminal runs: streaming output, 3 minute inactivity timeout, capped logs, and never pass --debug to avoid leaking tokens.
-- Rewrite downloads table with Skipped state, richer failure messages, and better rescan after cancel.
+startup:
+On Windows, Rustitles draws its window with OpenGL again, as 2.3 did. 2.4.0 moved to a newer graphics backend that can fail on some PCs, and when it failed the app closed on launch without a message (the likely cause of #11). macOS and Linux keep the 2.4.0 backend. If the window still cannot open, Rustitles now shows an error with the log file location instead of closing silently.
+
+linux:
+Rustitles opens its window on X11 desktops again. Builds from the repository embedded a 5120 px window icon that X11 refuses, so the window never opened. Linux now uses the 256 px icon.
+
+app:
+The app is back to the 2.4.0 code. The unreleased rework that went into 2.4.1 is taken out, so 2.4.2 is 2.4.0 plus the fixes above. The build and release scripts from 2.4.1 stay, and the README download links point to 2.4.2.
+
+Under the hood: removed two redundant u32 casts and a redundant import that clippy flagged in the 2.4.0 code, and the log now records which renderer started. fmt, clippy -D warnings (macOS, Windows x64 and ARM64 targets), and tests passed on macOS. multiBuild produced all 8 release files (Windows on the Windows 11 ARM VM). Runtime checks: both Windows portable builds opened with OpenGL on the Windows 11 ARM VM (x64 under emulation); the .deb binary opened under Xvfb on the Debian VM and showed the error path with no display; the macOS universal app opened. The AppImage itself was not launched (Rosetta cannot start it), but its binary carries the same fixes; no test on real x86-64 Windows or Linux hardware.

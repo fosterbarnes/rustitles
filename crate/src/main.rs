@@ -78,7 +78,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_mac_icon.png"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -88,7 +88,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -98,7 +98,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -112,12 +112,13 @@ fn load_app_icon() -> Option<egui::IconData> {
 
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
-        // Linux: try PNG first, then fallback to ICO
+        // Linux: try PNG first, then fallback to ICO. Use the 256 px icon: X11 rejects the
+        // 5120 px rustitles_icon.png as a window icon, so the window never opens.
         if let Ok(image) =
-            image::load_from_memory(include_bytes!("../resources/rustitles_icon.png"))
+            image::load_from_memory(include_bytes!("../resources/rustitles_icon_256.png"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -127,7 +128,7 @@ fn load_app_icon() -> Option<egui::IconData> {
             image::load_from_memory(include_bytes!("../resources/rustitles_icon.ico"))
         {
             let rgba = image.to_rgba8();
-            let size = [rgba.width() as u32, rgba.height() as u32];
+            let size = [rgba.width(), rgba.height()];
             Some(egui::IconData {
                 rgba: rgba.into_raw(),
                 width: size[0],
@@ -190,6 +191,13 @@ fn configure_window(icon_data: Option<egui::IconData>) -> eframe::NativeOptions 
     eframe::NativeOptions {
         viewport: viewport_builder,
         persist_window: true,
+        // eframe 0.36 defaults to wgpu, which fails to start on some Windows GPUs and drivers
+        // (#11). Use OpenGL (glow) on Windows like 2.3 did; macOS and Linux keep wgpu.
+        renderer: if cfg!(windows) {
+            eframe::Renderer::Glow
+        } else {
+            eframe::Renderer::Wgpu
+        },
         ..Default::default()
     }
 }
@@ -257,8 +265,8 @@ fn main() {
     let native_options = configure_window(icon_data);
 
     info!(
-        "Initializing GUI with window size: {}x{}",
-        WINDOW_SIZE[0], WINDOW_SIZE[1]
+        "Initializing GUI with window size: {}x{}, renderer: {}",
+        WINDOW_SIZE[0], WINDOW_SIZE[1], native_options.renderer
     );
 
     // Run the application
@@ -275,10 +283,29 @@ fn main() {
         }),
     );
 
+    // Report a failed start before the logger shuts down; this is a GUI-subsystem app on
+    // Windows, so stderr is never seen.
+    if let Err(error) = result {
+        error!("Failed to start the GUI: {error}");
+        show_startup_error(&error.to_string());
+    }
+
     // Cleanup on exit
     cleanup_on_exit();
+}
 
-    if let Err(error) = result {
-        eprintln!("Failed to start eframe: {error}");
-    }
+/// Show a native error dialog when the window cannot be created, instead of closing silently.
+fn show_startup_error(error: &str) {
+    let log_hint = match Utils::get_log_path() {
+        Ok(path) => format!("\n\nLog file: {}", path.display()),
+        Err(_) => String::new(),
+    };
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Rustitles could not start")
+        .set_description(format!(
+            "Rustitles could not open its window.\n\n{error}{log_hint}"
+        ))
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
 }

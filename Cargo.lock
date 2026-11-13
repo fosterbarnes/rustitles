@@ -1123,6 +1123,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
+ "glow",
  "glutin",
  "glutin-winit",
  "image",
@@ -4046,7 +4047,7 @@ dependencies = [
 
 [[package]]
 name = "rustitles"
-version = "2.4.0"
+version = "2.4.2"
 dependencies = [
  "chrono",
  "dirs",

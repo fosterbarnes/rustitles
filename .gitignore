@@ -2,7 +2,9 @@ target/
 .installer/Output/
 rustitles_log.txt
 rustitles_settings.json
+rustitles_startup.json
 System Volume Information
+desktop.ini
 *.code-workspace
 *.lock
 !Cargo.lock
@@ -12,3 +14,4 @@ System Volume Information
 .config/
 .DS_Store
 publish/
+.res/yapBot.json

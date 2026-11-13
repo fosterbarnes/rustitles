@@ -7,52 +7,83 @@ $ErrorActionPreference = 'Stop'
 if ($Help) { Write-Host '.run.ps1 [-x64|-arm64] [-- app args...]'; return }
 . (Join-Path $PSScriptRoot 'scriptHelper.ps1')
 
-function stopCargoApp {
-    param([Parameter(Mandatory)]$Process)
-    if (-not $Process.HasExited) {
-        try { $Process.Kill() } catch { }
-    }
-    Stop-Process -Name 'rustitles' -Force -ErrorAction SilentlyContinue
-}
-
 $architectureArgs = @($AppLaunchArgs | Where-Object { "$_" -match '(?i)^(--x64|-x64|--64|-64|--arm64|-arm64|--arm|-arm|--help|-h)$' })
 $architecture = if ($architectureArgs) { getArchitecture $architectureArgs } else { $null }
 if ($architecture -eq 'help') { Write-Host '.run.ps1 [-x64|-arm64] [-- app args...]'; return }
 $forward = @($AppLaunchArgs | Where-Object { "$_" -notmatch '(?i)^(--x64|-x64|--64|-64|--arm64|-arm64|--arm|-arm)$' })
 Set-Location -LiteralPath $repoRoot
 
-$keepRunning = $true
-while ($keepRunning) {
+function getOwnedProcessIds {
+    param([Parameter(Mandatory)][int]$RootId)
+
+    $parents = @{}
+    if ($IsWindows) {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+            $parents[[int]$process.ProcessId] = [int]$process.ParentProcessId
+        }
+    } else {
+        $psCommand = (Get-Command ps -CommandType Application -ErrorAction Stop).Source
+        foreach ($line in @(& $psCommand -eo 'pid=,ppid=' 2>$null)) {
+            if ($line -match '^\s*(\d+)\s+(\d+)\s*$') {
+                $parents[[int]$Matches[1]] = [int]$Matches[2]
+            }
+        }
+    }
+
+    $owned = [System.Collections.Generic.List[int]]::new()
+    $owned.Add($RootId)
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($entry in $parents.GetEnumerator()) {
+            if ($owned.Contains([int]$entry.Value) -and -not $owned.Contains([int]$entry.Key)) {
+                $owned.Add([int]$entry.Key)
+                $changed = $true
+            }
+        }
+    }
+    @($owned)
+}
+
+function stopOwnedProcessTree {
+    param([Parameter(Mandatory)][int]$RootId)
+
+    $owned = getOwnedProcessIds $RootId
+    foreach ($processId in $owned) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $running = @($owned | Where-Object {
+            Get-Process -Id $_ -ErrorAction SilentlyContinue
+        })
+        if (-not $running) { return }
+        Start-Sleep -Milliseconds 25
+    }
+    throw "Owned cargo process tree did not exit cleanly."
+}
+
+while ($true) {
     $cargoArgs = @('run', '--manifest-path', $manifest)
     if ($IsWindows -and $architecture) { $cargoArgs += @('--target', (getWindowsCargoTarget $architecture)) }
     if ($forward.Count -gt 0) { $cargoArgs += @('--') + [string[]]$forward }
     $proc = Start-Process -FilePath 'cargo' -ArgumentList $cargoArgs -WorkingDirectory $repoRoot -NoNewWindow -PassThru
     Write-Host "=== running $projectName... === `nq = quit `nr , up arrow = restart"
-    $restartRequested = $false; $lineBuffer = ''
+    $action = $null
     while (-not $proc.HasExited) {
         Start-Sleep -Milliseconds 50
         try { if (-not [Console]::KeyAvailable) { continue } } catch { continue }
         $key = [Console]::ReadKey($true)
-        if ($key.Key -eq [ConsoleKey]::UpArrow) { stopCargoApp -Process $proc; $restartRequested = $true; break }
-        if ($key.Key -eq [ConsoleKey]::Enter) {
-            Write-Host ''; $userInput = $lineBuffer.Trim(); $lineBuffer = ''
-            if ($userInput -in @('q', 'quit', 'exit')) {
-                stopCargoApp -Process $proc
-                $keepRunning = $false; break
-            }
-            if ($userInput -in @('r', 'restart')) { stopCargoApp -Process $proc; $restartRequested = $true; break }
-            continue
-        }
-        if ($key.Key -eq [ConsoleKey]::Backspace) {
-            if ($lineBuffer.Length -gt 0) { $lineBuffer = $lineBuffer.Substring(0, $lineBuffer.Length - 1); Write-Host "`b `b" -NoNewline }
-            continue
-        }
-        if ($key.KeyChar -and -not [char]::IsControl($key.KeyChar)) { $lineBuffer += $key.KeyChar; Write-Host -NoNewline $key.KeyChar }
+        if ($key.Key -eq [ConsoleKey]::R -or $key.Key -eq [ConsoleKey]::UpArrow) { $action = 'restart'; break }
+        if ($key.Key -eq [ConsoleKey]::Q) { $action = 'quit'; break }
     }
-    if ($proc.HasExited) {
-        Write-Host 'App stopped.'
-        try { $code = $proc.ExitCode; if ($null -ne $code -and $code -ne 0) { Write-Host "cargo exit code: $code" -ForegroundColor Red } } catch { }
+    if ($action) {
+        stopOwnedProcessTree $proc.Id
+        $proc.WaitForExit()
+    } else {
+        $exitCode = $proc.ExitCode
+        if ($exitCode -ne 0) { throw "cargo run failed (exit $exitCode)." }
     }
-    if (-not $keepRunning -or -not $restartRequested) { break }
+    if ($action -ne 'restart') { break }
 }
 closeOut 3

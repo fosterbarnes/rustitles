@@ -14,6 +14,9 @@ $versionBuild = Join-Path $versionFolder 'versionBuild'
 $versionTag = Join-Path $versionFolder 'versionTag'
 $buildNotes = Join-Path $repoRoot 'buildNotes.txt'
 $readme = Join-Path $repoRoot 'README.md'
+# Private, gitignored word list for version tags (copied from oc); only the maintainer's clone has it.
+$yapWords = Join-Path $repoRoot '.res' 'yapBot.json'
+$exeSuffix = if ($IsWindows) { '.exe' } else { '' }
 $installerFolder = Join-Path $repoRoot '.installer'
 $installerOutput = Join-Path $installerFolder 'Output'
 $publishFolder = Join-Path $repoRoot 'publish'
@@ -21,13 +24,13 @@ $publishBuildFolder = Join-Path $publishFolder 'build'
 $appPublisher = 'fosterbarnes'
 $appURL = "https://github.com/$appPublisher/$projectName"
 $ghRepo = "$appPublisher/$projectName"
-$versionLines = @([IO.File]::ReadAllText($version) -split "\r?\n")
-while ($versionLines.Count -lt 3) { $versionLines += '' }
-$versionContents = $versionLines[0]
-$versionTagContents = if (Test-Path -LiteralPath $versionTag) { ([IO.File]::ReadAllText($versionTag)).Trim() } else { $versionLines[1] }
-$tag = if ($versionTagContents) { $versionTagContents } else { "v$versionContents" }
+$versionContents = ([IO.File]::ReadAllText($version) -split '\r?\n')[0].Trim()
+# GitHub release tag. The camelCase word in .version/versionTag names the version in commit subjects.
+$tag = "v$versionContents"
 $noBom = [Text.UTF8Encoding]::new($false)
-$weztermExe = (Get-Command wezterm.exe -ErrorAction SilentlyContinue)?.Source
+$weztermExe = (Get-Command "wezterm$exeSuffix" -ErrorAction SilentlyContinue)?.Source
+# Commit subject labels in decision order; AGENTS.md (buildNotes.txt section) defines each.
+$commitLabels = 'fix', 'feat.', 'patch', 'perf.', 'deps.', 'scripts', 'cleanup', 'docs', 'misc.'
 $windowsInstallerTargets = @(
     @{
         Architecture = 'x64'
@@ -50,18 +53,11 @@ function writeClearedLine {
     Write-Host "`r$Text$(' ' * [Math]::Max(0, $PadWidth - $Text.Length))" -NoNewline:$NoNewline
 }
 
+# Ends a script started with `pwsh -File`; a no-op for nested `& other.ps1` calls, pipeline runs, and
+# an open prompt. SCRIPT_OWN_PANE is set by the oc sidebar for panes it made for one script.
 function closeOut {
     param([int]$Seconds = 5)
     if ($env:BASE_BUILD_PIPELINE) { return }
-    if ($Seconds -lt 0) { $Seconds = 0 }
-    if ($Seconds -gt 0) {
-        $pad = "closing after $Seconds seconds..."
-        foreach ($n in $Seconds..1) {
-            writeClearedLine -Text "closing after $n seconds..." -PadWidth $pad.Length -NoNewline
-            Start-Sleep -Seconds 1
-        }
-        writeClearedLine -Text 'closing...' -PadWidth $pad.Length
-    }
     $caller = $MyInvocation.PSCommandPath
     if ([string]::IsNullOrWhiteSpace($caller)) { return }
     $argv = [Environment]::GetCommandLineArgs()
@@ -78,9 +74,21 @@ function closeOut {
         $callerFull = [IO.Path]::GetFullPath($caller)
     } catch { return }
     if (-not [string]::Equals($fileFull, $callerFull, [StringComparison]::OrdinalIgnoreCase)) { return }
-    if ($env:SCRIPT_OWN_PANE -and $env:WEZTERM_PANE -and $weztermExe) {
-        try { runNativeCommand $weztermExe @('cli', 'kill-pane', '--pane-id', $env:WEZTERM_PANE) 'wezterm' } catch { }
+    if ($Seconds -lt 0) { $Seconds = 0 }
+    if ($Seconds -gt 0) {
+        $pad = "closing after $Seconds seconds..."
+        foreach ($n in $Seconds..1) {
+            writeClearedLine -Text "closing after $n seconds..." -PadWidth $pad.Length -NoNewline
+            Start-Sleep -Seconds 1
+        }
+        writeClearedLine -Text 'closing...' -PadWidth $pad.Length
     }
+    # A failed or missing wezterm call must not stop the exit below.
+    try {
+        if ($env:SCRIPT_OWN_PANE -and $env:WEZTERM_PANE -and $weztermExe) {
+            & $weztermExe @('cli', 'kill-pane', '--pane-id', $env:WEZTERM_PANE)
+        }
+    } catch { }
     [Environment]::Exit(0)
 }
 
@@ -89,30 +97,159 @@ function openUrl {
     Start-Process -FilePath $Url | Out-Null
 }
 
-function readVerFile {
-    param([string]$LiteralPath = $version)
-    $lines = @([IO.File]::ReadAllText($LiteralPath) -split "\r?\n")
-    while ($lines.Count -lt 3) { $lines += '' }
-    $lines
-}
-
 function writeFileNoBom {
     param([Parameter(Mandatory)][string]$LiteralPath, [Parameter(Mandatory)][string]$Content)
     [IO.File]::WriteAllText($LiteralPath, $Content, $noBom)
 }
 
-function writeVerFile {
-    param(
-        [Parameter(Mandatory)][string]$SemVer,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Tag,
-        [Parameter(Mandatory)][AllowEmptyString()][string]$Build
-    )
-    writeFileNoBom -LiteralPath $version -Content (($SemVer.Trim(), $Tag.Trim(), $Build.Trim()) -join "`n")
-    if ($Tag.Trim()) {
-        writeFileNoBom -LiteralPath $versionTag -Content ($Tag.Trim() + "`n")
-    } elseif (Test-Path -LiteralPath $versionTag) {
-        Remove-Item -LiteralPath $versionTag -Force
+function requireVersion {
+    $contents = [IO.File]::ReadAllText($version).Trim()
+    if ($contents -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid $version`: expected one version in X.Y.Z format" }
+    $contents
+}
+
+# Writes .version/version and every file that repeats it (Cargo.toml, version.txt, config.rs).
+function setVersion {
+    param([Parameter(Mandatory)][string]$SemVer)
+    writeFileNoBom -LiteralPath $version -Content "$SemVer`n"
+    syncVersionConsumers $SemVer
+}
+
+# The version one part higher than .version/version; lower parts reset to 0.
+function getNextVersion {
+    param([Parameter(Mandatory)][ValidateSet('major', 'minor', 'patch')][string]$Part)
+    $major, $minor, $patch = @((requireVersion).Split('.') | ForEach-Object { [int]$_ })
+    switch ($Part) {
+        'major' { "$($major + 1).0.0" }
+        'minor' { "$major.$($minor + 1).0" }
+        'patch' { "$major.$minor.$($patch + 1)" }
     }
+}
+
+# Bumps one version part, syncs every version consumer, and rolls a new version tag.
+function bumpVersionPart {
+    param([Parameter(Mandatory)][ValidateSet('major', 'minor', 'patch')][string]$Part)
+    $current = requireVersion
+    $next = getNextVersion $Part
+    setVersion $next
+    $newTag = newVersionTag
+    Write-Host "Version $current -> $next ($newTag)"
+    $next
+}
+
+function getHeadVersion {
+    $headVersion = (& git -C $repoRoot show HEAD:.version/version | Out-String).Trim()
+    if ($LASTEXITCODE) { throw "git show HEAD version failed (exit $LASTEXITCODE)." }
+    $headVersion
+}
+
+# A push with code changes needs a version bump unless the user declines one (agentPush -NoBump);
+# docs and notes alone do not. Returns the changed or untracked code paths when the version still
+# matches HEAD, else nothing.
+function getUnbumpedCodeChanges {
+    if ((getHeadVersion) -ne (requireVersion)) { return @() }
+    $changed = @(& git -C $repoRoot diff --name-only HEAD)
+    if ($LASTEXITCODE) { throw "git diff failed (exit $LASTEXITCODE)." }
+    $changed += @(& git -C $repoRoot ls-files -o --exclude-standard)
+    if ($LASTEXITCODE) { throw "git ls-files failed (exit $LASTEXITCODE)." }
+    @($changed | Where-Object { $_ -notmatch '(^docs/|\.md$|^buildNotes\.txt$|^\.version/)' })
+}
+
+function newVersionTag { setVersionTag (getVersionTags 1) }
+
+# Returns $Count distinct random camelCase two-word tags without writing anything.
+function getVersionTags {
+    param([int]$Count = 1)
+    if (-not (Test-Path -LiteralPath $yapWords)) {
+        throw "Missing word list $yapWords. It is private and gitignored; copy it from oc's .res folder."
+    }
+    $words = @(Get-Content -LiteralPath $yapWords -Raw | ConvertFrom-Json | Where-Object { $_ -match '^[A-Za-z]+$' })
+    if (-not $words.Count) { throw "No usable words found in $yapWords." }
+    $tags = [Collections.Generic.HashSet[string]]::new()
+    while ($tags.Count -lt $Count) {
+        $first = $words[[Security.Cryptography.RandomNumberGenerator]::GetInt32($words.Count)]
+        $second = $words[[Security.Cryptography.RandomNumberGenerator]::GetInt32($words.Count)]
+        [void]$tags.Add($first.ToLowerInvariant() + $second.Substring(0, 1).ToUpperInvariant() + $second.Substring(1).ToLowerInvariant())
+    }
+    @($tags)
+}
+
+function setVersionTag {
+    param([Parameter(Mandatory)][string]$Tag)
+    if ($Tag -cnotmatch '^[a-z]+[A-Z][a-z]*$') { throw "Invalid tag '$Tag': expected one camelCase two-word tag" }
+    writeFileNoBom -LiteralPath $versionTag -Content "$Tag`n"
+    $Tag
+}
+
+function requireVersionTag {
+    if (-not (Test-Path -LiteralPath $versionTag)) {
+        throw "Missing $versionTag`: run .scripts/bumpVersion.ps1 -RerollTag to generate one."
+    }
+    $contents = [IO.File]::ReadAllText($versionTag).Trim()
+    if ($contents -cnotmatch '^[a-z]+[A-Z][a-z]*$') { throw "Invalid $versionTag`: expected one camelCase two-word tag" }
+    $contents
+}
+
+# True when buildNotes.txt differs from HEAD or is not tracked yet. git diff --quiet exits 1 for a
+# difference; any other nonzero exit is a git failure, not a changed file.
+function testBuildNotesChanged {
+    $tracked = @(& git -C $repoRoot ls-files -- $buildNotes)
+    if ($LASTEXITCODE) { throw "git ls-files failed (exit $LASTEXITCODE)." }
+    if (-not $tracked) { return $true }
+    & git -C $repoRoot diff --quiet HEAD -- $buildNotes
+    switch ($LASTEXITCODE) {
+        0 { return $false }
+        1 { return $true }
+        default { throw "git diff failed (exit $LASTEXITCODE)." }
+    }
+}
+
+# Throws unless $Subject is "<Prefix> [<label> > <summary>]", optionally "; <label> > <summary>".
+# Summaries: no edge spaces, no trailing period, none of [ ] > ;. .NET regex is case-sensitive.
+function assertCommitSubject {
+    param([Parameter(Mandatory)][string]$Subject, [Parameter(Mandatory)][string]$Prefix)
+    $labels = ($commitLabels | ForEach-Object { [regex]::Escape($_) }) -join '|'
+    $segment = "($labels) > [^\s\[\]>;](?:[^\[\]>;]*[^\s.\[\]>;])?"
+    $match = [regex]::Match($Subject, "^$([regex]::Escape($Prefix)) \[$segment(?:; $segment)?\]$")
+    if (-not $match.Success) {
+        throw "Line 1 must be '$Prefix [<label> > <summary>]', optionally '; <label> > <summary>'. " +
+            "Labels: $($commitLabels -join ' ')"
+    }
+    $first, $second = $match.Groups[1].Value, $match.Groups[2].Value
+    if ($second -and $first -eq $second) { throw "Line 1 repeats label '$first'; merge the segments." }
+    if ($second -and 'misc.' -in $first, $second) { throw "'misc.' must be the only segment." }
+    if ($Subject -match '[^\x20-\x7E]') { throw 'Line 1 must be plain ASCII.' }
+    if ($Subject.Length -gt 72) { throw "Line 1 is $($Subject.Length) characters; the limit is 72." }
+}
+
+# Makes modified and untracked files match their .gitattributes eol (*.ps1 CRLF, *.sh LF). Files
+# without an eol attribute are left alone (Rust sources stay LF). Binary and non-UTF-8 files are skipped.
+function setLineEndings {
+    $paths = @(git -C $repoRoot ls-files -m -o --exclude-standard)
+    if ($LASTEXITCODE) { throw "git ls-files failed (exit $LASTEXITCODE)." }
+    if (-not $paths) { return }
+    $attrs = @($paths | git -C $repoRoot check-attr --stdin eol)
+    if ($LASTEXITCODE) { throw "git check-attr failed (exit $LASTEXITCODE)." }
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $count = 0
+    foreach ($line in $attrs) {
+        if ($line -notmatch '^(.*): eol: (lf|crlf)$') { continue }
+        $path, $eol = $Matches[1], $Matches[2]
+        $full = Join-Path $repoRoot $path
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        $bytes = [IO.File]::ReadAllBytes($full)
+        if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { continue }
+        $bom = [byte[]]@()
+        if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            $bom = [byte[]](0xEF, 0xBB, 0xBF)
+        }
+        try { $text = $strictUtf8.GetString($bytes, $bom.Length, $bytes.Length - $bom.Length) } catch { continue }
+        $fixed = $eol -eq 'lf' ? $text.Replace("`r`n", "`n") : [regex]::Replace($text, '(?<!\r)\n', "`r`n")
+        if ($fixed -ceq $text) { continue }
+        [IO.File]::WriteAllBytes($full, [byte[]]($bom + $noBom.GetBytes($fixed)))
+        $count++
+    }
+    if ($count) { Write-Host "Fixed line endings in $count file(s)." }
 }
 
 function setVerBuild {
@@ -153,6 +290,8 @@ function getWindowsCargoTarget {
 
 function runNativeCommand {
     param([Parameter(Mandatory)][string]$FilePath, [object[]]$ArgumentList, [string]$Name = $FilePath)
+    # Clear a stale code first: a .ps1 run in-process leaves $LASTEXITCODE untouched on success.
+    $global:LASTEXITCODE = 0
     & $FilePath @ArgumentList
     if ($LASTEXITCODE) { throw "$Name failed (exit $LASTEXITCODE)." }
 }
@@ -219,7 +358,7 @@ function getConfigVersion {
 }
 
 function assertVersionConsistency {
-    $sot = (readVerFile)[0].Trim()
+    $sot = requireVersion
     $versions = @{
         '.version/version' = $sot
         'crate/src/version.txt' = (readVersionFile)
@@ -239,21 +378,6 @@ function syncVersionConsumers {
     syncVersionToCargoToml -SemVer $SemVer
     syncVersionToConfigRs -SemVer $SemVer
     assertVersionConsistency
-}
-
-function readBuildNotes {
-    if (-not (Test-Path -LiteralPath $buildNotes)) { return @{ Title = ''; Body = '' } }
-    $lines = @([IO.File]::ReadAllLines($buildNotes))
-    if ($lines.Count -eq 0) { return @{ Title = ''; Body = '' } }
-    $title = $lines[0].Trim()
-    $body = ''
-    if ($title -and $lines.Count -gt 1) {
-        if (-not [string]::IsNullOrWhiteSpace($lines[1])) {
-            throw 'buildNotes.txt must have one blank line after the first line, then the description.'
-        }
-        if ($lines.Count -gt 2) { $body = ($lines | Select-Object -Skip 2) -join "`n" }
-    }
-    @{ Title = $title; Body = $body.Trim() }
 }
 
 function rustitlesWinExeName {
@@ -398,7 +522,7 @@ function invokeHostPackagers {
         return
     }
     if ($IsLinux) {
-        runNativeCommand -FilePath 'bash' -ArgumentList @(Join-Path $PSScriptRoot 'buildDebian.sh') -Name 'buildDebian.sh'
+        runNativeCommand -FilePath 'bash' -ArgumentList @(Join-Path $PSScriptRoot 'buildLinux.sh') -Name 'buildLinux.sh'
         return
     }
     if ($IsMacOS) {
@@ -417,10 +541,7 @@ function buildAll {
         removeRootReleaseArtifacts
         deleteDir $publishFolder
         assertVersionConsistency
-        $buildArgs = if ($Architecture) { @($Architecture) } else { @() }
-        if (-not $IsWindows) {
-            runNativeCommand -FilePath (Join-Path $PSScriptRoot 'build.ps1') -ArgumentList $buildArgs -Name 'build.ps1'
-        }
+        # The host packagers (buildWin.ps1, buildMac.sh, buildLinux.sh) run their own release builds.
         $installerArgs = if ($Architecture) { @($Architecture) } else { @() }
         runNativeCommand -FilePath (Join-Path $PSScriptRoot 'buildInstaller.ps1') -ArgumentList $installerArgs -Name 'buildInstaller.ps1'
         assertPublishArtifacts -Architecture $Architecture

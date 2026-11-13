@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 /// The current application version (keep in sync with .version/version, crate/src/version.txt, crate/Cargo.toml)
-pub const APP_VERSION: &str = "2.4.0";
+pub const APP_VERSION: &str = "2.4.2";
 
 /// Supported video file extensions for subtitle scanning
 pub static VIDEO_EXTENSIONS: &[&str] = &[

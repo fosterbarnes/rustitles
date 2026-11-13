@@ -6,10 +6,11 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($Help) { Write-Host 'prePush.ps1 [-x64|-arm64]'; return }
 . (Join-Path $PSScriptRoot 'scriptHelper.ps1')
-# Fast gate: tests + clippy before heavy multi-platform build
+# Fast gate before the multi-host build.
 runNativeCommand cargo @('test', '--workspace', '--quiet') 'cargo test'
 runNativeCommand cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings') 'cargo clippy'
 runNativeCommand cargo @('fmt', '--check') 'cargo fmt'
+setLineEndings
 $multiBuildArgs = @($BuildArgs) + @($args)
 $previousPipeline = $env:BASE_BUILD_PIPELINE
 try {

@@ -64,6 +64,24 @@ fn latest_non_empty_line(output: &str) -> Option<&str> {
         .find(|line| !line.is_empty())
 }
 
+/// Read the multi-subtitle driver's `RUSTITLES_RESULT [...]` line: (path, score 0-100, provider).
+fn parse_driver_result(stdout: &[u8]) -> Vec<(PathBuf, u32, String)> {
+    #[derive(serde::Deserialize)]
+    struct Saved {
+        path: PathBuf,
+        score: u32,
+        provider: String,
+    }
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("RUSTITLES_RESULT "))
+        .and_then(|json| serde_json::from_str::<Vec<Saved>>(json).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|saved| (saved.path, saved.score, saved.provider))
+        .collect()
+}
+
 fn next_char_at(s: &str, idx: usize) -> Option<char> {
     s[idx..].chars().next()
 }
@@ -510,6 +528,7 @@ impl Default for SubtitleDownloader {
             providers: settings.providers,
             refiners: settings.refiners,
             minimum_score: settings.minimum_score,
+            subtitles_per_video: settings.subtitles_per_video,
             exclude_hearing_impaired: settings.exclude_hearing_impaired,
             matching_options_open: settings.matching_options_open,
             opensubtitles_max_pages: settings.opensubtitles_max_pages,
@@ -559,6 +578,7 @@ impl SubtitleDownloader {
             providers: self.providers.clone(),
             refiners: self.refiners.clone(),
             minimum_score: self.minimum_score,
+            subtitles_per_video: self.subtitles_per_video,
             exclude_hearing_impaired: self.exclude_hearing_impaired,
             matching_options_open: self.matching_options_open,
             opensubtitles_max_pages: self.opensubtitles_max_pages,
@@ -625,6 +645,7 @@ impl SubtitleDownloader {
         let skip_scanned_media = self.skip_scanned_media;
         let ignore_local_extras = self.ignore_local_extras;
         let exclude_hearing_impaired = self.exclude_hearing_impaired;
+        let subtitles_per_video = self.subtitles_per_video;
         let ignored_folders_count = Arc::new(AtomicUsize::new(0));
         let skipped_count = Arc::new(AtomicUsize::new(0));
 
@@ -753,6 +774,7 @@ impl SubtitleDownloader {
                         video,
                         &selected_languages,
                         exclude_hearing_impaired,
+                        subtitles_per_video,
                     ) {
                         skipped += 1;
                         false
@@ -844,6 +866,7 @@ impl SubtitleDownloader {
                 status: JobStatus::Pending,
                 output: "Queued".to_string(),
                 subtitle_paths: Vec::new(),
+                subtitle_details: Vec::new(),
             })
             .collect();
 
@@ -866,6 +889,23 @@ impl SubtitleDownloader {
         let minimum_score = self.minimum_score;
         let exclude_hearing_impaired = self.exclude_hearing_impaired;
         let opensubtitles_max_pages = self.opensubtitles_max_pages;
+        let subtitles_per_video = self.subtitles_per_video;
+        let opensubtitlescom_config = {
+            let mut config = serde_json::Map::new();
+            for (key, value) in [
+                ("username", &self.opensubtitlescom_username),
+                ("password", &self.opensubtitlescom_password),
+                ("apikey", &self.opensubtitlescom_apikey),
+            ] {
+                if !value.is_empty() {
+                    config.insert(key.to_string(), value.clone().into());
+                }
+            }
+            if let Some(pages) = opensubtitles_max_pages {
+                config.insert("max_result_pages".to_string(), pages.into());
+            }
+            config
+        };
         let python_command = self.python_command.clone();
         let scan_history = Arc::clone(&self.scan_history);
 
@@ -926,6 +966,7 @@ impl SubtitleDownloader {
                     let providers_clone = providers.clone();
                     let refiners_clone = refiners.clone();
                     let opensubtitles_max_pages_clone = opensubtitles_max_pages;
+                    let opensubtitlescom_config_clone = opensubtitlescom_config.clone();
                     let python_command_clone = python_command.clone();
                     let jobs_clone = Arc::clone(&jobs_arc);
                     let history_clone = Arc::clone(&scan_history);
@@ -978,13 +1019,19 @@ impl SubtitleDownloader {
                                         .map(|signature| (path.clone(), signature))
                                 })
                                 .collect();
+                        let existing_extras = SubtitleUtils::extra_subtitle_files_in_listing(
+                            &job_path,
+                            &langs_clone,
+                            &existing_subtitles,
+                        );
                         if force_download || overwrite_existing {
-                            let overwrite_targets =
+                            let mut overwrite_targets =
                                 SubtitleUtils::find_all_subtitle_files_in_listing(
                                     &job_path,
                                     &langs_clone,
                                     &existing_subtitles,
                                 );
+                            overwrite_targets.extend(existing_extras.iter().cloned());
                             if let Err(error) =
                                 SubtitleUtils::backup_subtitle_files(&overwrite_targets)
                             {
@@ -1039,6 +1086,7 @@ impl SubtitleDownloader {
                             all_args.push("--provider".to_string());
                             all_args.push(provider.clone());
                         }
+                        let mut job_refiners = Vec::new();
                         for refiner in &refiners_clone {
                             if refiner == "metadata"
                                 && job_path.to_string_lossy().starts_with(r"\\")
@@ -1051,6 +1099,7 @@ impl SubtitleDownloader {
                             }
                             all_args.push("--refiner".to_string());
                             all_args.push(refiner.clone());
+                            job_refiners.push(refiner.clone());
                         }
                         if minimum_score > 0 {
                             all_args.push("--min-score".to_string());
@@ -1103,13 +1152,43 @@ impl SubtitleDownloader {
                                     *suppress_status = true;
                                 }
                             };
-                        let output = PythonManager::run_subliminal(
-                            &all_args,
-                            &env_vars,
-                            &cancel_flag_clone,
-                            &mut on_output,
-                            python_command_clone.as_deref(),
-                        );
+                        let output = if subtitles_per_video > 1 {
+                            // Subliminal's CLI keeps one subtitle per language; the driver keeps N.
+                            let mut provider_configs = serde_json::Map::new();
+                            if !opensubtitlescom_config_clone.is_empty() {
+                                provider_configs.insert(
+                                    "opensubtitlescom".to_string(),
+                                    opensubtitlescom_config_clone.clone().into(),
+                                );
+                            }
+                            let config = serde_json::json!({
+                                "video": job_path_arg,
+                                "languages": langs_clone,
+                                "count": subtitles_per_video,
+                                "providers": providers_clone,
+                                "refiners": job_refiners,
+                                "provider_configs": provider_configs,
+                                "min_score": minimum_score,
+                                "exclude_hearing_impaired": exclude_hearing_impaired,
+                                "force": force_download || overwrite_existing,
+                            });
+                            env_vars
+                                .insert("RUSTITLES_DRIVER_CONFIG".to_string(), config.to_string());
+                            PythonManager::run_subliminal_driver(
+                                &env_vars,
+                                &cancel_flag_clone,
+                                &mut on_output,
+                                python_command_clone.as_deref(),
+                            )
+                        } else {
+                            PythonManager::run_subliminal(
+                                &all_args,
+                                &env_vars,
+                                &cancel_flag_clone,
+                                &mut on_output,
+                                python_command_clone.as_deref(),
+                            )
+                        };
 
                         for (stream, status_buffer, suppress_status) in [
                             ("stdout", stdout_status_buffer, suppress_stdout_status),
@@ -1144,6 +1223,7 @@ impl SubtitleDownloader {
                             "skipping",
                         ];
                         let mut subtitle_paths = Vec::new();
+                        let mut subtitle_details = Vec::new();
                         let mut changed_subtitle_paths = Vec::new();
                         let job_status = match output {
                             Ok(out) => {
@@ -1162,6 +1242,14 @@ impl SubtitleDownloader {
                                     &langs_clone,
                                     &folder_listing,
                                 );
+                                subtitle_paths.extend(
+                                    SubtitleUtils::extra_subtitle_files_in_listing(
+                                        &job_path,
+                                        &langs_clone,
+                                        &folder_listing,
+                                    ),
+                                );
+                                subtitle_details = parse_driver_result(&out.stdout);
                                 let all_subtitle_paths =
                                     SubtitleUtils::subtitle_files_for_video_in_listing(
                                         &job_path,
@@ -1308,6 +1396,31 @@ impl SubtitleDownloader {
                             }
                         };
 
+                        // Extras this run did not rewrite are left over from a larger
+                        // "Subtitles per video"; they were backed up above, so drop them.
+                        if matches!(job_status, JobStatus::Success)
+                            && (force_download || overwrite_existing)
+                        {
+                            for stale in existing_extras
+                                .iter()
+                                .filter(|path| !changed_subtitle_paths.contains(*path))
+                            {
+                                match std::fs::remove_file(stale) {
+                                    Ok(()) => {
+                                        info!("Removed stale extra subtitle {}", stale.display());
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            "Failed to remove stale extra subtitle {}: {}",
+                                            stale.display(),
+                                            error
+                                        );
+                                    }
+                                }
+                                subtitle_paths.retain(|path| path != stale);
+                            }
+                        }
+
                         if matches!(job_status, JobStatus::Success)
                             && !changed_subtitle_paths.is_empty()
                         {
@@ -1331,6 +1444,7 @@ impl SubtitleDownloader {
                                         &job_path,
                                         &langs,
                                         &hearing_impaired_langs,
+                                        subtitles_per_video,
                                     );
                                 }
                             }
@@ -1340,6 +1454,7 @@ impl SubtitleDownloader {
                         if let Some(job) = jobs_lock.get_mut(idx) {
                             job.status = job_status;
                             job.subtitle_paths = subtitle_paths;
+                            job.subtitle_details = subtitle_details;
                         }
                     });
 

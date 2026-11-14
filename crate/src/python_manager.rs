@@ -870,6 +870,68 @@ impl PythonManager {
                     )
                 }),
         );
+        Self::run_first_available(attempts, args, env_vars, cancel_flag, on_output)
+    }
+
+    /// Run the embedded multi-subtitle driver with the first Python that can import
+    /// Subliminal. Settings travel in `RUSTITLES_DRIVER_CONFIG` (in `env_vars`).
+    pub fn run_subliminal_driver(
+        env_vars: &std::collections::HashMap<String, String>,
+        cancel_flag: &std::sync::atomic::AtomicBool,
+        on_output: &mut dyn FnMut(&str, &[u8], std::time::Duration),
+        preferred_python: Option<&str>,
+    ) -> io::Result<std::process::Output> {
+        const DRIVER: &str = include_str!("../resources/subliminal_top_n.py");
+        let mut interpreters: Vec<String> =
+            Self::subliminal_entry_interpreter().into_iter().collect();
+        interpreters.extend(
+            Self::python_probe_commands(preferred_python)
+                .into_iter()
+                .map(str::to_string),
+        );
+        let attempts = interpreters
+            .into_iter()
+            .map(|python| (python, vec!["-c".to_string(), DRIVER.to_string()]))
+            .collect();
+        Self::run_first_available(attempts, &[], env_vars, cancel_flag, on_output)
+    }
+
+    /// Interpreter named in the `subliminal` entry point shebang (pipx venvs on Linux/macOS).
+    fn subliminal_entry_interpreter() -> Option<String> {
+        if cfg!(windows) {
+            return None;
+        }
+        let mut search_dirs: Vec<PathBuf> =
+            std::env::split_paths(&std::env::var_os("PATH")?).collect();
+        if let Some(home) = dirs::home_dir() {
+            search_dirs.push(home.join(".local").join("bin"));
+        }
+        let script = search_dirs
+            .into_iter()
+            .map(|dir| dir.join("subliminal"))
+            .find(|p| p.is_file())?;
+        let first_line = std::fs::read_to_string(script)
+            .ok()?
+            .lines()
+            .next()?
+            .to_string();
+        let mut parts = first_line.strip_prefix("#!")?.split_whitespace();
+        let command = parts.next()?;
+        let python = if command.ends_with("/env") {
+            parts.next()?
+        } else {
+            command
+        };
+        Some(python.to_string())
+    }
+
+    fn run_first_available(
+        attempts: Vec<(String, Vec<String>)>,
+        args: &[String],
+        env_vars: &std::collections::HashMap<String, String>,
+        cancel_flag: &std::sync::atomic::AtomicBool,
+        on_output: &mut dyn FnMut(&str, &[u8], std::time::Duration),
+    ) -> io::Result<std::process::Output> {
         let mut last_output = None;
         let mut last_error = None;
 

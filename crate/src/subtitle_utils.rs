@@ -75,6 +75,35 @@ impl SubtitleUtils {
         found_subtitles
     }
 
+    /// Extra subtitles saved by "Subtitles per video" (`Name.en.2.srt`), sorted.
+    pub fn extra_subtitle_files_in_listing(
+        video_path: &Path,
+        langs: &[String],
+        folder_subtitles: &[PathBuf],
+    ) -> Vec<PathBuf> {
+        let Some(stem) = video_path.file_stem().and_then(|s| s.to_str()) else {
+            return Vec::new();
+        };
+        let mut extras: Vec<PathBuf> =
+            Self::subtitle_files_for_video_in_listing(video_path, folder_subtitles)
+                .into_iter()
+                .filter(|path| {
+                    let Some(value) = path.file_stem().and_then(|v| v.to_str()) else {
+                        return false;
+                    };
+                    let Some((head, index)) = value.rsplit_once('.') else {
+                        return false;
+                    };
+                    index.parse::<u8>().is_ok_and(|i| i >= 2)
+                        && langs
+                            .iter()
+                            .any(|lang| head.eq_ignore_ascii_case(&format!("{}.{}", stem, lang)))
+                })
+                .collect();
+        extras.sort();
+        extras
+    }
+
     /// List subtitle files in a folder once (no per-video stem filter, unsorted)
     pub fn list_subtitle_files_in_folder(folder: &Path) -> Vec<PathBuf> {
         const EXTENSIONS: &[&str] = &["srt", "sub", "ssa", "ass", "vtt"];
@@ -473,6 +502,34 @@ mod tests {
         assert!(!SubtitleUtils::is_hearing_impaired_path(Path::new(
             "The.History.srt"
         )));
+    }
+
+    #[test]
+    fn finds_numbered_extras_only_for_selected_languages() {
+        let video = Path::new("/tv/Show - S01E01.mkv");
+        let listing: Vec<std::path::PathBuf> = [
+            "Show - S01E01.en.srt",
+            "Show - S01E01.en.3.srt",
+            "Show - S01E01.EN.2.srt",
+            "Show - S01E01.fr.2.srt",
+            "Show - S01E01.en.1.srt",
+            "Show - S01E01.en.sdh.srt",
+            "Show - S01E012.en.2.srt",
+        ]
+        .iter()
+        .map(|name| Path::new("/tv").join(name))
+        .collect();
+
+        let extras =
+            SubtitleUtils::extra_subtitle_files_in_listing(video, &["en".to_string()], &listing);
+
+        assert_eq!(
+            extras,
+            vec![
+                Path::new("/tv/Show - S01E01.EN.2.srt"),
+                Path::new("/tv/Show - S01E01.en.3.srt"),
+            ]
+        );
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub struct ScanRecord {
     pub contains_hearing_impaired: bool,
     #[serde(default)]
     pub hearing_impaired_langs: Vec<String>,
+    /// "Subtitles per video" setting of the successful run; 0 in older files means 1.
+    #[serde(default)]
+    pub subtitles_per_video: u8,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -153,6 +156,7 @@ impl ScanHistory {
         path: &Path,
         selected_languages: &[String],
         exclude_hearing_impaired: bool,
+        subtitles_per_video: u8,
     ) -> bool {
         let key = path.to_string_lossy().to_string();
         let Some(record) = self.records.get(&key) else {
@@ -184,7 +188,8 @@ impl ScanHistory {
         if record.file_id != Some(file_id) {
             return false;
         }
-        record_allows_skip(record, selected_languages, exclude_hearing_impaired)
+        record.subtitles_per_video.max(1) >= subtitles_per_video
+            && record_allows_skip(record, selected_languages, exclude_hearing_impaired)
     }
 
     pub fn covers_languages(recorded: &[String], selected: &[String]) -> bool {
@@ -258,6 +263,7 @@ impl ScanHistory {
         path: &Path,
         langs: &[String],
         hearing_impaired_langs: &[String],
+        subtitles_per_video: u8,
     ) {
         let Some((size, mtime_secs, mtime_nanos, file_id)) = Self::precise_file_identity(path)
         else {
@@ -265,7 +271,7 @@ impl ScanHistory {
             return;
         };
         let key = path.to_string_lossy().to_string();
-        let record = merge_record(
+        let mut record = merge_record(
             self.records.get(&key),
             size,
             mtime_secs,
@@ -274,6 +280,7 @@ impl ScanHistory {
             langs,
             hearing_impaired_langs,
         );
+        record.subtitles_per_video = subtitles_per_video;
         self.records.insert(key, record);
         self.dirty = true;
     }
@@ -337,6 +344,7 @@ fn merge_record(
         langs: merged,
         contains_hearing_impaired,
         hearing_impaired_langs: merged_hearing_impaired,
+        subtitles_per_video: 1,
     }
 }
 
@@ -426,6 +434,7 @@ mod tests {
                 langs: vec!["en".to_string()],
                 contains_hearing_impaired: false,
                 hearing_impaired_langs: Vec::new(),
+                subtitles_per_video: 1,
             },
         );
         assert!(ScanHistory::covers_languages(
@@ -484,6 +493,7 @@ mod tests {
             langs: vec!["en".to_string(), "fr".to_string()],
             contains_hearing_impaired: false,
             hearing_impaired_langs: Vec::new(),
+            subtitles_per_video: 1,
         };
 
         let merged = merge_record(Some(&old), 101, 51, 0, 2, &["en".to_string()], &[]);
@@ -501,6 +511,7 @@ mod tests {
             langs: vec!["en".to_string(), "fr".to_string()],
             contains_hearing_impaired: true,
             hearing_impaired_langs: Vec::new(),
+            subtitles_per_video: 1,
         };
 
         assert!(!record_allows_skip(&record, &["en".to_string()], true));
@@ -517,6 +528,7 @@ mod tests {
             langs: vec!["en".to_string(), "fr".to_string()],
             contains_hearing_impaired: true,
             hearing_impaired_langs: vec!["en".to_string(), "fr".to_string()],
+            subtitles_per_video: 1,
         };
 
         let merged = merge_record(Some(&old), 100, 50, 0, 1, &["en".to_string()], &[]);
@@ -536,6 +548,7 @@ mod tests {
             langs: vec!["en".to_string()],
             contains_hearing_impaired: true,
             hearing_impaired_langs: Vec::new(),
+            subtitles_per_video: 1,
         };
 
         let merged = merge_record(Some(&old), 100, 50, 0, 1, &["en".to_string()], &[]);
@@ -554,6 +567,7 @@ mod tests {
             langs: vec!["en".to_string(), "fr".to_string()],
             contains_hearing_impaired: true,
             hearing_impaired_langs: Vec::new(),
+            subtitles_per_video: 1,
         };
 
         let merged = merge_record(Some(&old), 100, 50, 0, 1, &["en".to_string()], &[]);
@@ -573,6 +587,7 @@ mod tests {
             langs: vec!["en".to_string(), "fr".to_string()],
             contains_hearing_impaired: true,
             hearing_impaired_langs: Vec::new(),
+            subtitles_per_video: 1,
         };
 
         let merged = merge_record(Some(&old), 100, 50, 11, 2, &["en".to_string()], &[]);
@@ -593,6 +608,7 @@ mod tests {
             langs: vec!["en".to_string(), "fr".to_string()],
             contains_hearing_impaired: false,
             hearing_impaired_langs: Vec::new(),
+            subtitles_per_video: 1,
         };
 
         assert!(record_allows_skip(&record, &["en".to_string()], false));

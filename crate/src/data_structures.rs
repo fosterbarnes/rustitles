@@ -31,6 +31,8 @@ pub struct DownloadJob {
     /// Latest subprocess status shown for pending or running jobs.
     pub output: String,
     pub subtitle_paths: Vec<PathBuf>,
+    /// Score (0-100) and provider per saved file, when the multi-subtitle driver ran.
+    pub subtitle_details: Vec<(PathBuf, u32, String)>,
 }
 
 /// Initial dependency state before the main UI becomes available.
@@ -88,6 +90,7 @@ pub struct SubtitleDownloader {
     pub providers: Vec<String>,
     pub refiners: Vec<String>,
     pub minimum_score: u8,
+    pub subtitles_per_video: u8,
     pub exclude_hearing_impaired: bool,
     pub matching_options_open: bool,
     pub keep_dropdown_open: bool,

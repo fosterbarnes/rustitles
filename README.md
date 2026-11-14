@@ -14,24 +14,24 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   <tbody>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_x64_installer.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles_win_x64_installer.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/x64Installer.svg" width="180" height="auto" alt="x64 installer"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_x64_portable.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles_win_x64_portable.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/x64Portable.svg" width="180" height="auto" alt="x64 portable"/>
         </a>
       </td>
     </tr>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_ARM64_installer.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles_win_ARM64_installer.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/arm64.svg" width="180" height="auto" alt="ARM64 installer"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_win_ARM64_portable.exe">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles_win_ARM64_portable.exe">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/arm64Portable.svg" width="180" height="auto" alt="ARM64 portable"/>
         </a>
       </td>
@@ -45,12 +45,12 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   <tbody>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_app_macOS.zip">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles_app_macOS.zip">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/appleArm.svg" width="180" height="auto" alt="Universal macOS app"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles_app_macOS.zip">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles_app_macOS.zip">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/main/btn/appleIntel.svg" width="180" height="auto" alt="Universal macOS app"/>
         </a>
       </td>
@@ -64,12 +64,12 @@ Scans a given folder and automatically downloads subtitles in the selected langu
   <tbody>
     <tr>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles.deb">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles.deb">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/refs/heads/main/btn/deb.svg" width="180" height="auto" alt="Linux DEB package"/>
         </a>
       </td>
       <td align="center" valign="top">
-        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.2/rustitles.AppImage">
+        <a href="https://github.com/fosterbarnes/rustitles/releases/download/v2.4.3/rustitles.AppImage">
           <img src="https://raw.githubusercontent.com/fosterbarnes/res/refs/heads/main/btn/appImage.svg" width="180" height="auto" alt="Linux AppImage"/>
         </a>
       </td>
@@ -113,6 +113,8 @@ OpenSubtitles.com pages are configurable in `Subliminal Matching` (text box, def
 `Hash`, `Metadata`, `TMDB`, and `TVDB` refiners are enabled by default. Toggle them in `Subliminal Matching` as needed  
 
 Set a minimum match score to reject weak matches. `0` keeps Subliminal's default behavior.
+
+`Subtitles per video` (1-5, default 1) saves the top matches for each video file. The best match keeps the usual name (`Movie.en.srt`) and the extras are saved as `Movie.en.2.srt`, `Movie.en.3.srt`. Each extra uses another provider download, so it counts against daily limits like OpenSubtitles.com's.
 
 ### Optional API Credentials
 

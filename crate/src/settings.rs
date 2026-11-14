@@ -28,6 +28,8 @@ pub struct Settings {
     pub refiners: Vec<String>,
     #[serde(default)]
     pub minimum_score: u8,
+    #[serde(default = "default_subtitles_per_video")]
+    pub subtitles_per_video: u8,
     #[serde(default)]
     pub exclude_hearing_impaired: bool,
     #[serde(default = "default_true")]
@@ -63,6 +65,12 @@ fn default_refiners() -> Vec<String> {
     ]
 }
 
+pub const MAX_SUBTITLES_PER_VIDEO: u8 = 5;
+
+fn default_subtitles_per_video() -> u8 {
+    1
+}
+
 fn default_max_pages() -> Option<u8> {
     Some(3)
 }
@@ -91,6 +99,7 @@ impl Default for Settings {
             providers: default_providers(),
             refiners: default_refiners(),
             minimum_score: 0,
+            subtitles_per_video: 1,
             exclude_hearing_impaired: false,
             matching_options_open: true,
             opensubtitles_max_pages: Some(3),
@@ -124,6 +133,9 @@ impl Settings {
         if self.minimum_score > 100 {
             self.minimum_score = 0;
         }
+        if !(1..=MAX_SUBTITLES_PER_VIDEO).contains(&self.subtitles_per_video) {
+            self.subtitles_per_video = 1;
+        }
         if let Some(pages) = self.opensubtitles_max_pages {
             if !(1..=20).contains(&pages) {
                 self.opensubtitles_max_pages = Some(3);
@@ -136,11 +148,11 @@ impl Settings {
     pub fn credentials_storage_blurb() -> &'static str {
         #[cfg(windows)]
         {
-            "Stored locally in rustitles_settings.json (next to the app) and synced to subliminal.toml for Subliminal. No key is baked into the app."
+            "Saved only on this computer, in rustitles_settings.json next to the app, and copied to Subliminal's subliminal.toml. Rustitles doesn't include a key of its own."
         }
         #[cfg(not(windows))]
         {
-            "Stored locally in settings.json in your rustitles config folder (XDG on Linux/macOS) and synced to subliminal.toml for Subliminal. No key is baked into the app."
+            "Saved only on this computer, in settings.json in your rustitles config folder, and copied to Subliminal's subliminal.toml. Rustitles doesn't include a key of its own."
         }
     }
 
@@ -242,6 +254,7 @@ mod tests {
             refiners: vec!["metadata".to_string(), "unknown".to_string()],
             concurrent_downloads: 0,
             minimum_score: 101,
+            subtitles_per_video: 9,
             ..Settings::default()
         };
         let normalized = settings.normalize();
@@ -253,6 +266,7 @@ mod tests {
             DEFAULT_CONCURRENT_DOWNLOADS
         );
         assert_eq!(normalized.minimum_score, 0);
+        assert_eq!(normalized.subtitles_per_video, 1);
     }
 
     #[test]
@@ -269,5 +283,6 @@ mod tests {
         assert!(!settings.exclude_hearing_impaired);
         assert!(settings.matching_options_open);
         assert_eq!(settings.opensubtitles_max_pages, Some(3));
+        assert_eq!(settings.subtitles_per_video, 1);
     }
 }

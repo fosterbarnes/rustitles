@@ -10,7 +10,7 @@ use crate::{
     debug,
     helper_functions::{Utils, Validation},
     info,
-    settings::Settings,
+    settings::{Settings, MAX_SUBTITLES_PER_VIDEO},
     warn,
 };
 use eframe::egui;
@@ -69,6 +69,48 @@ fn macos_install_command(package: &str, homebrew_installed: bool) -> String {
     format!(
         "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\" && {shellenv} && brew install {package}"
     )
+}
+
+const PROVIDERS: &[(&str, &str)] = &[
+    ("addic7ed", "Addic7ed"),
+    ("gestdown", "Gestdown"),
+    ("napiprojekt", "NapiProjekt"),
+    ("opensubtitles", "OpenSubtitles"),
+    ("opensubtitlescom", "OpenSubtitles.com"),
+    ("podnapisi", "Podnapisi"),
+    ("tvsubtitles", "TVSubtitles"),
+];
+
+/// Hover list for a job with several saved subtitles: file name, score, provider.
+fn render_saved_subtitles(ui: &mut egui::Ui, job: &crate::data_structures::DownloadJob) {
+    egui::Grid::new("saved_subtitles")
+        .num_columns(3)
+        .spacing([14.0, 2.0])
+        .show(ui, |ui| {
+            for path in &job.subtitle_paths {
+                let name = Utils::get_file_name(path);
+                ui.label(egui::RichText::new(name).monospace());
+                match job
+                    .subtitle_details
+                    .iter()
+                    .find(|(saved, _, _)| saved == path)
+                {
+                    Some((_, score, provider)) => {
+                        ui.label(egui::RichText::new(score.to_string()).monospace());
+                        let provider_name = PROVIDERS
+                            .iter()
+                            .find(|(code, _)| code == provider)
+                            .map_or(provider.as_str(), |(_, name)| name);
+                        ui.label(egui::RichText::new(provider_name).monospace());
+                    }
+                    None => {
+                        ui.label("");
+                        ui.label("");
+                    }
+                }
+                ui.end_row();
+            }
+        });
 }
 
 fn svg_icon_to_pos(x: f32, y: f32, icon_rect: egui::Rect) -> egui::Pos2 {
@@ -641,7 +683,8 @@ impl SubtitleDownloader {
             }
 
             let force_download = self.get_force_download_mut();
-            let force_checkbox_response = ui.checkbox(force_download, "Ignore Embedded Subtitles");
+            let force_checkbox_response = ui.checkbox(force_download, "Ignore Embedded Subtitles")
+                .on_hover_text("Downloads subtitles even when the video already has subtitles built in.");
             if force_checkbox_response.changed() {
                 info!("(Ignore Embedded Subtitles) changed to: {}", *force_download);
                 self.set_keep_dropdown_open(false); // Close dropdown when checkbox is clicked
@@ -649,7 +692,8 @@ impl SubtitleDownloader {
             }
             ui.add_space(0.0);
             let overwrite_existing = self.get_overwrite_existing_mut();
-            let overwrite_checkbox_response = ui.checkbox(overwrite_existing, "Overwrite Existing Subtitles");
+            let overwrite_checkbox_response = ui.checkbox(overwrite_existing, "Overwrite Existing Subtitles")
+                .on_hover_text("Replaces subtitle files that are already next to the video.\n\nThe old files are kept as .bak backups.");
             if overwrite_checkbox_response.changed() {
                 info!("(Overwrite Existing Subtitles) changed to: {}", *overwrite_existing);
                 self.set_keep_dropdown_open(false); // Close dropdown when checkbox is clicked
@@ -664,7 +708,7 @@ impl SubtitleDownloader {
             let ignore_extras_checkbox_response = ui.checkbox(ignore_local_extras, "Ignore Extra Folders for Plex")
                 .on_hover_ui(|ui| {
                     ui.set_width(300.0);
-                    ui.label("Ignores 'Behind The Scenes', 'Deleted Scenes', 'Featurettes', 'Interviews', 'Scenes', 'Shorts', 'Trailers' and 'Other' folders (case-insensitive)");
+                    ui.label("Skips Plex extras folders when scanning.\n\nThese are folders named Behind The Scenes, Deleted Scenes, Featurettes, Interviews, Scenes, Shorts, Trailers, or Other.");
                 });
             if ignore_extras_checkbox_response.changed() {
                 info!("(Ignore Local Extras) changed to: {}", *ignore_local_extras);
@@ -680,7 +724,7 @@ impl SubtitleDownloader {
             let skip_scanned_response = ui.checkbox(skip_scanned_media, "Skip scanned media")
                 .on_hover_ui(|ui| {
                     ui.set_width(320.0);
-                    ui.label("Skip files that already had a successful download unless the file changed or new languages are selected.");
+                    ui.label("Skips videos that already got subtitles in an earlier scan.\n\nA video is checked again if its file changes, you add a language, or you raise Subtitles per video.");
                 });
             if skip_scanned_response.changed() {
                 info!("(Skip scanned media) changed to: {}", *self.get_skip_scanned_media_mut());
@@ -726,15 +770,6 @@ impl SubtitleDownloader {
 
     /// Render Subliminal provider, matching, and subtitle-type settings
     pub fn render_matching_options(&mut self, ui: &mut egui::Ui) {
-        const PROVIDERS: &[(&str, &str)] = &[
-            ("addic7ed", "Addic7ed"),
-            ("gestdown", "Gestdown"),
-            ("napiprojekt", "NapiProjekt"),
-            ("opensubtitles", "OpenSubtitles"),
-            ("opensubtitlescom", "OpenSubtitles.com"),
-            ("podnapisi", "Podnapisi"),
-            ("tvsubtitles", "TVSubtitles"),
-        ];
         const REFINERS: &[(&str, &str)] = &[
             ("hash", "Hash"),
             ("metadata", "Metadata"),
@@ -745,7 +780,7 @@ impl SubtitleDownloader {
         let panel_response = egui::CollapsingHeader::new(egui::RichText::new("Subliminal Matching").color(egui::Color32::WHITE))
             .default_open(self.get_matching_options_open())
             .show(ui, |ui| {
-             ui.label(egui::RichText::new("Defaults select all providers; clear every box to use Subliminal's full provider pool.").color(egui::Color32::WHITE).size(12.0));
+             ui.label(egui::RichText::new("All providers start selected. Clear every box to let Subliminal use all of its providers, including ones not listed here.").color(egui::Color32::WHITE).size(12.0));
             let mut changed = false;
             ui.horizontal_wrapped(|ui| {
                 for (code, name) in PROVIDERS {
@@ -786,11 +821,28 @@ impl SubtitleDownloader {
                 let response = ui.add_sized(
                     [35.0, ui.spacing().interact_size.y],
                     egui::TextEdit::singleline(&mut score_text),
-                );
+                ).on_hover_text("The lowest match score (0-100) a subtitle needs before it's downloaded.\n\nHigher numbers skip weak matches but may find nothing. 0 accepts any match.");
                 if response.changed() {
                     if let Ok(score) = score_text.parse::<u8>() {
                         if score <= 100 {
                             self.minimum_score = score;
+                            changed = true;
+                        }
+                    }
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Subtitles per video:").color(egui::Color32::WHITE));
+                let mut count_text = self.subtitles_per_video.to_string();
+                let response = ui.add_sized(
+                    [35.0, ui.spacing().interact_size.y],
+                    egui::TextEdit::singleline(&mut count_text),
+                ).on_hover_text("How many subtitles to download for each video.\n\nThe higher a subtitle's number, the more likely it is to be out of sync or incorrect.");
+                if response.changed() {
+                    if let Ok(count) = count_text.trim().parse::<u8>() {
+                        if (1..=MAX_SUBTITLES_PER_VIDEO).contains(&count) {
+                            self.subtitles_per_video = count;
                             changed = true;
                         }
                     }
@@ -803,7 +855,7 @@ impl SubtitleDownloader {
                 let response = ui.add_sized(
                     [35.0, ui.spacing().interact_size.y],
                     egui::TextEdit::singleline(&mut pages_text),
-                ).on_hover_text("Empty = unlimited. Default 3. Range 1-20.");
+                ).on_hover_text("How many pages of OpenSubtitles.com results to search for each video.\n\nMore pages can find better matches but take longer. Leave it empty for no limit.");
                 if response.changed() {
                     let trimmed = pages_text.trim();
                     if trimmed.is_empty() {
@@ -859,7 +911,10 @@ impl SubtitleDownloader {
                     ui.label(egui::RichText::new(Settings::credentials_storage_blurb()).color(egui::Color32::WHITE).weak().size(11.0));
                 });
 
-            if ui.checkbox(&mut self.exclude_hearing_impaired, "Exclude SDH / captions").changed() {
+            if ui.checkbox(&mut self.exclude_hearing_impaired, "Exclude SDH / captions")
+                .on_hover_text("Skips subtitles made for deaf and hard-of-hearing viewers, which include sound descriptions like [door slams].")
+                .changed()
+            {
                 changed = true;
             }
 
@@ -886,7 +941,7 @@ impl SubtitleDownloader {
             let text_response = ui.add_sized(
                 [25.0, ui.spacing().interact_size.y],
                 egui::TextEdit::singleline(&mut concurrent_text),
-            );
+            ).on_hover_text("How many videos to download subtitles for at the same time.\n\nHigher numbers finish faster but are more likely to hit provider rate limits.");
             if text_response.changed() {
                 if let Ok(value) = concurrent_text.parse::<usize>() {
                     if Validation::is_valid_concurrent_downloads(value) {
@@ -1179,6 +1234,22 @@ impl SubtitleDownloader {
                                             }
                                             response
                                                 .on_hover_text_at_pointer("Open containing folder");
+                                        }
+                                        if subtitle_paths.len() > 1 {
+                                            let more = ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(format!(
+                                                        "+{}",
+                                                        subtitle_paths.len() - 1
+                                                    ))
+                                                    .color(egui::Color32::from_rgb(136, 136, 136))
+                                                    .monospace(),
+                                                )
+                                                .selectable(false),
+                                            );
+                                            more.on_hover_ui(|ui| {
+                                                render_saved_subtitles(ui, job);
+                                            });
                                         }
                                     }
                                     JobStatus::Failed(err) => {

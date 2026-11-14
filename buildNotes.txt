@@ -1,12 +1,9 @@
-v2.4.2 eldenVolley [fix > Windows and Linux startup failures]
+v2.4.3 farkFunyun [feat. > subtitles per video setting]
 
-startup:
-On Windows, Rustitles draws its window with OpenGL again, as 2.3 did. 2.4.0 moved to a newer graphics backend that can fail on some PCs, and when it failed the app closed on launch without a message (the likely cause of #11). macOS and Linux keep the 2.4.0 backend. If the window still cannot open, Rustitles now shows an error with the log file location instead of closing silently.
+subtitles:
+A new "Subtitles per video" box in Subliminal Matching (1-5, default 1) saves the top matches for each video instead of only the best one (issue #10), so there is a backup when the first file is out of sync. The best match keeps its normal name and the extras are saved next to it as .en.2.srt, .en.3.srt, and so on. The jobs table shows +2 next to the saved file; hover it to see every file with its score and provider. Lowering the number and overwriting removes leftover extras, and the old files are backed up first. "Skip scanned media" scans a video again when the number goes up. Each extra subtitle counts against provider download quotas, which the README now mentions.
 
-linux:
-Rustitles opens its window on X11 desktops again. Builds from the repository embedded a 5120 px window icon that X11 refuses, so the window never opened. Linux now uses the 256 px icon.
+settings:
+Settings tooltips are reworded in plain language, and every setting in the top row and the Matching panel now has one.
 
-app:
-The app is back to the 2.4.0 code. The unreleased rework that went into 2.4.1 is taken out, so 2.4.2 is 2.4.0 plus the fixes above. The build and release scripts from 2.4.1 stay, and the README download links point to 2.4.2.
-
-Under the hood: removed two redundant u32 casts and a redundant import that clippy flagged in the 2.4.0 code, and the log now records which renderer started. fmt, clippy -D warnings (macOS, Windows x64 and ARM64 targets), and tests passed on macOS. multiBuild produced all 8 release files (Windows on the Windows 11 ARM VM). Runtime checks: both Windows portable builds opened with OpenGL on the Windows 11 ARM VM (x64 under emulation); the .deb binary opened under Xvfb on the Debian VM and showed the error path with no display; the macOS universal app opened. The AppImage itself was not launched (Rosetta cannot start it), but its binary carries the same fixes; no test on real x86-64 Windows or Linux hardware.
+Under the hood: with 1 subtitle per video, downloads use the same Subliminal command as before; with more, a small bundled Python script lists, scores, and downloads the matches, finding the Python inside a pipx install on its own. Provider credentials reach it through an environment variable, never the command line. fmt, clippy, and tests (32 passed) passed on macOS, and the script downloaded distinct subtitles from real providers on Subliminal 2.8.0 and 2.6.0. The pre-push checks passed and multiBuild built all 8 release files (Windows, macOS, Linux). The GUI was not launched, and the Windows and Linux builds were not run.

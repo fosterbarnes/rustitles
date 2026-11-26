@@ -223,6 +223,36 @@ fn configure_visuals(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, visuals);
 }
 
+/// Make the title bar dark while the window is still hidden. egui's own `SetTheme` command
+/// only reaches winit after eframe shows the window, and Windows does not repaint the title
+/// bar until the next minimize or focus change, so it would first appear light.
+#[cfg(windows)]
+fn set_dark_title_bar(cc: &eframe::CreationContext<'_>) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::{HWND, TRUE};
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+
+    let Ok(handle) = cc.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(win32.hwnd.get() as *mut _);
+    let dark = TRUE;
+    let result = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const _ as *const _,
+            std::mem::size_of_val(&dark) as u32,
+        )
+    };
+    if let Err(e) = result {
+        warn!("Failed to set dark title bar: {e}");
+    }
+}
+
 /// Use embedded Inter for UI text on every platform.
 fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
@@ -275,6 +305,8 @@ fn main() {
         native_options,
         Box::new(|cc| {
             // Configure visuals
+            #[cfg(windows)]
+            set_dark_title_bar(cc);
             configure_visuals(&cc.egui_ctx);
             configure_fonts(&cc.egui_ctx);
             egui_extras::install_image_loaders(&cc.egui_ctx);

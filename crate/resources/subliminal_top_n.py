@@ -18,6 +18,7 @@ try:
         region,
         scan_video,
     )
+    from subliminal.core import search_external_subtitles
 except ImportError as error:
     print(f"No module named subliminal ({error})", file=sys.stderr)
     sys.exit(3)
@@ -53,7 +54,13 @@ def main():
 
     languages = {Language.fromietf(code) for code in config["languages"]}
     if not config["force"]:
-        languages -= set(video.subtitle_languages)
+        # Like the CLI: existing sidecar files (Name.en.srt) count as present languages.
+        # With SDH excluded, Name.en.sdh.srt must not stand in for a regular English subtitle.
+        external = search_external_subtitles(video.name).values()
+        if config["exclude_hearing_impaired"]:
+            external = [s for s in external if not s.hearing_impaired]
+        video.subtitles.extend(external)
+        languages -= video.subtitle_languages
     if not languages:
         say("Downloaded 0 subtitles")
         return
@@ -80,7 +87,7 @@ def main():
         for subtitle, score in batch:
             if not is_valid(subtitle):
                 continue
-            key = fingerprint(subtitle)
+            key = (subtitle.language, fingerprint(subtitle))
             if key in seen:
                 continue
             seen.add(key)

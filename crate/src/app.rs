@@ -161,10 +161,13 @@ fn redact_sensitive(text: &str) -> String {
                     }
                     (start, end)
                 };
-                if end > start {
+                // Empty values replace nothing, so `start + 3` could pass the end or split a char.
+                search_from = if end > start {
                     out.replace_range(start..end, "***");
-                }
-                search_from = start + 3;
+                    start + 3
+                } else {
+                    start
+                };
             } else {
                 search_from = after_key;
             }
@@ -180,6 +183,24 @@ fn escape_toml_string(value: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+}
+
+/// Normalized name of a TOML table header line (`[ a . b ] # note` -> `a.b`), or None.
+fn toml_table_name(line: &str) -> Option<String> {
+    let inner = line.trim().strip_prefix('[')?;
+    let close = inner.find(']')?;
+    let rest = inner[close + 1..].trim_start();
+    // `]` covers the second bracket of an array-of-tables header.
+    if !(rest.is_empty() || rest.starts_with('#') || rest.starts_with(']')) {
+        return None;
+    }
+    Some(
+        inner[..close]
+            .split('.')
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
 }
 
 fn subtitle_file_signature(path: &Path) -> Option<(u64, u128)> {
@@ -232,20 +253,22 @@ fn sync_subliminal_credentials(username: &str, password: &str, apikey: &str) {
         .lines()
         .map(str::to_string)
         .collect();
-    let header = "[provider.opensubtitlescom]";
+    let table = "provider.opensubtitlescom";
+    let header = format!("[{table}]");
+    let is_header = |line: &str| toml_table_name(line).as_deref() == Some(table);
     let values = [
         ("username", username),
         ("password", password),
         ("apikey", apikey),
     ];
-    if !lines.iter().any(|line| line.trim() == header) {
+    if !lines.iter().any(|line| is_header(line)) {
         if values.iter().all(|(_, value)| value.is_empty()) {
             return;
         }
         if lines.last().is_some_and(|line| !line.is_empty()) {
             lines.push(String::new());
         }
-        lines.push(header.to_string());
+        lines.push(header);
     }
 
     let mut in_target = false;
@@ -253,8 +276,8 @@ fn sync_subliminal_credentials(username: &str, password: &str, apikey: &str) {
     let mut rewritten = Vec::with_capacity(lines.len() + values.len());
     for line in lines {
         let trimmed = line.trim_start();
-        if trimmed.starts_with('[') {
-            in_target = trimmed == header;
+        if let Some(name) = toml_table_name(trimmed) {
+            in_target = name == table;
         }
         if in_target {
             let key = trimmed.split_once('=').map(|(key, _)| key.trim());
@@ -273,7 +296,7 @@ fn sync_subliminal_credentials(username: &str, password: &str, apikey: &str) {
         rewritten.push(line);
     }
 
-    if let Some(header_index) = rewritten.iter().position(|line| line.trim() == header) {
+    if let Some(header_index) = rewritten.iter().position(|line| is_header(line)) {
         let mut insert_at = header_index + 1;
         for (index, (name, value)) in values.iter().enumerate() {
             if !found[index] && !value.is_empty() {
@@ -299,12 +322,34 @@ fn sync_subliminal_credentials(username: &str, password: &str, apikey: &str) {
             );
         }
     }
-    if let Err(error) = std::fs::write(&path, content) {
+    if let Err(error) = write_private_file(&path, &content) {
         crate::warn!(
             "Failed to write Subliminal config {}: {}",
             path.display(),
             error
         );
+    }
+}
+
+/// Writes `content` readable only by the owner on Unix (the file holds credentials).
+fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        // `mode` applies only when the file is created; tighten an existing file too.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(content.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, content)
     }
 }
 
@@ -1305,7 +1350,13 @@ impl SubtitleDownloader {
                                 for sub_path in &subtitle_paths {
                                     info!("SUBTITLE JOBS OUTPUT: {}", sub_path.display());
                                 }
-                                if combined_output.contains("downloaded 0 subtitle") {
+                                let dbm_error = combined_output.contains("dbm.error")
+                                    || combined_output.contains("db type could not be determined");
+                                // A DBM cache failure also prints "Downloaded 0 subtitles"; report
+                                // the cache error rather than "No subtitles found".
+                                if combined_output.contains("downloaded 0 subtitle")
+                                    && !(dbm_error && changed_subtitle_paths.is_empty())
+                                {
                                     if !changed_subtitle_paths.is_empty() {
                                         JobStatus::Success
                                     } else if !force_download {
@@ -1356,11 +1407,9 @@ impl SubtitleDownloader {
                                     }
                                 } else if combined_output.contains("error")
                                     || combined_output.contains("failed")
+                                    || dbm_error
                                 {
-                                    if combined_output.contains("dbm.error")
-                                        || combined_output
-                                            .contains("db type could not be determined")
-                                    {
+                                    if dbm_error {
                                         if !changed_subtitle_paths.is_empty() {
                                             warn!("DBM cache error occurred but subtitles were downloaded successfully for {}", job_path.display());
                                             JobStatus::Success
@@ -1408,6 +1457,7 @@ impl SubtitleDownloader {
                                 match std::fs::remove_file(stale) {
                                     Ok(()) => {
                                         info!("Removed stale extra subtitle {}", stale.display());
+                                        subtitle_paths.retain(|path| path != stale);
                                     }
                                     Err(error) => {
                                         warn!(
@@ -1417,7 +1467,6 @@ impl SubtitleDownloader {
                                         );
                                     }
                                 }
-                                subtitle_paths.retain(|path| path != stale);
                             }
                         }
 
@@ -2122,7 +2171,8 @@ impl SubtitleDownloader {
 #[cfg(test)]
 mod tests {
     use super::{
-        escape_toml_string, latest_non_empty_line, redact_sensitive, verified_subliminal_state,
+        escape_toml_string, latest_non_empty_line, redact_sensitive, toml_table_name,
+        verified_subliminal_state,
     };
     use crate::data_structures::SubliminalInstallResult;
 
@@ -2151,6 +2201,22 @@ mod tests {
             redact_sensitive("préface password=éclair token=abc apikey = \"secret value\""),
             "préface password=*** token=*** apikey = \"***\""
         );
+        assert_eq!(redact_sensitive("apikey=,"), "apikey=,");
+        assert_eq!(redact_sensitive("password=\"\""), "password=\"\"");
+        assert_eq!(redact_sensitive("apikey=, token=abc"), "apikey=, token=***");
+    }
+
+    #[test]
+    fn toml_table_name_ignores_spacing_and_comments() {
+        let target = Some("provider.opensubtitlescom".to_string());
+        assert_eq!(toml_table_name("[provider.opensubtitlescom]"), target);
+        assert_eq!(
+            toml_table_name("  [ provider . opensubtitlescom ] # creds"),
+            target
+        );
+        assert!(toml_table_name("[[provider.other]]").is_some_and(|name| name != "provider.other"));
+        assert_eq!(toml_table_name("username = \"x\""), None);
+        assert_eq!(toml_table_name("[a] = 1"), None);
     }
 
     #[test]

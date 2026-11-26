@@ -229,12 +229,21 @@ impl Settings {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize settings: {}", e))?;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, &json)
+        // Holds plaintext credentials: owner-only on Unix. Remove any stale tmp first because
+        // mode() only applies when the file is created.
+        let _ = std::fs::remove_file(&tmp);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
+            .open(&tmp)
+            .map_err(|e| format!("Failed to write settings tmp file: {}", e))?;
+        std::io::Write::write_all(&mut file, json.as_bytes())
             .map_err(|e| format!("Failed to write settings tmp file: {}", e))?;
         // ponytail: best-effort fsync, ignore errors on platforms where not supported
-        if let Ok(f) = std::fs::File::open(&tmp) {
-            let _ = f.sync_all();
-        }
+        let _ = file.sync_all();
+        drop(file);
         std::fs::rename(&tmp, &path)
             .map_err(|e| format!("Failed to commit settings file: {}", e))?;
         crate::debug!("Settings saved to {}", path.display());

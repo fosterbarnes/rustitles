@@ -96,7 +96,13 @@ impl Utils {
         {
             use std::os::windows::process::CommandExt;
             let canonical = path.canonicalize().map_err(|e| e.to_string())?;
-            let path_str = canonical.to_string_lossy().replace("/", "\\");
+            // explorer /select, rejects verbatim (\\?\) paths that canonicalize returns.
+            let raw = canonical.to_string_lossy().replace("/", "\\");
+            let path_str = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{}", rest)
+            } else {
+                raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+            };
             let mut cmd = std::process::Command::new("explorer.exe");
             cmd.arg("/select,").arg(&path_str);
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW

@@ -131,8 +131,10 @@ function bumpVersionPart {
     param([Parameter(Mandatory)][ValidateSet('major', 'minor', 'patch')][string]$Part)
     $current = requireVersion
     $next = getNextVersion $Part
+    # Pick the tag first: getVersionTags throws without the word list, and must not leave a half bump.
+    $newTag = getVersionTags 1
     setVersion $next
-    $newTag = newVersionTag
+    $newTag = setVersionTag $newTag
     Write-Host "Version $current -> $next ($newTag)"
     $next
 }

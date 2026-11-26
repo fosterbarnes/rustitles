@@ -46,6 +46,50 @@ const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 #[cfg(windows)]
 const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// True when `entry` is one of the entries of a PATH-style list. Windows lists split on `;` and
+/// compare case-insensitively; Unix lists split on `:` and compare exactly. A trailing separator
+/// (`\` or `/`) is ignored.
+fn path_list_contains(path_list: &str, entry: &str, windows: bool) -> bool {
+    let (separator, slash) = if windows { (';', '\\') } else { (':', '/') };
+    let normalize = |s: &str| {
+        let s = s.trim_end_matches(slash);
+        if windows {
+            s.to_lowercase()
+        } else {
+            s.to_string()
+        }
+    };
+    let target = normalize(entry);
+    path_list.split(separator).any(|p| normalize(p) == target)
+}
+
+/// Expand `%NAME%` references from the process environment, leaving unknown ones as-is.
+#[cfg(windows)]
+fn expand_env_refs(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let name = &after[..end];
+        match env::var(name) {
+            Ok(v) if !name.is_empty() => out.push_str(&v),
+            _ => {
+                out.push('%');
+                out.push_str(name);
+                out.push('%');
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Clone, Copy)]
 enum SubliminalStream {
     Stdout,
@@ -416,31 +460,13 @@ impl PythonManager {
         {
             info!("Installing Subliminal via pipx on Linux");
 
-            if let Ok(output) =
-                Self::run_command_hidden("pipx", &["--version"], &std::collections::HashMap::new())
-            {
-                if !output.status.success() {
-                    info!("pipx not found, attempting to install pipx first");
-                    let pipx_install_attempts = [
-                        ("python3", vec!["-m", "pip", "install", "--user", "pipx"]),
-                        ("python", vec!["-m", "pip", "install", "--user", "pipx"]),
-                        ("apt", vec!["install", "-y", "pipx"]),
-                        ("dnf", vec!["install", "-y", "python3-pipx"]),
-                        ("pacman", vec!["-S", "--noconfirm", "python-pipx"]),
-                    ];
-
-                    for (cmd, args) in &pipx_install_attempts {
-                        let args_refs: Vec<&str> = args.iter().map(|s| &**s).collect();
-                        if let Ok(output) = Self::run_command_hidden(
-                            cmd,
-                            &args_refs,
-                            &std::collections::HashMap::new(),
-                        ) {
-                            if output.status.success() {
-                                info!("pipx installed successfully using {}", cmd);
-                                break;
-                            }
-                        }
+            if !Self::_pipx_available() {
+                info!("pipx not found, attempting to install pipx first");
+                if Self::try_install_pipx() {
+                    info!("pipx installed successfully");
+                    // pip --user puts pipx in ~/.local/bin, which may not be on PATH yet.
+                    if let Err(e) = Self::refresh_environment() {
+                        warn!("Failed to refresh PATH after installing pipx: {}", e);
                     }
                 }
             }
@@ -544,10 +570,7 @@ impl PythonManager {
             let mut changed = false;
 
             for scripts_path in &scripts_dirs {
-                if !current_path
-                    .to_lowercase()
-                    .contains(&scripts_path.to_lowercase())
-                {
+                if !path_list_contains(&current_path, scripts_path, true) {
                     if current_path.trim().is_empty() {
                         current_path = scripts_path.clone();
                     } else {
@@ -558,7 +581,21 @@ impl PythonManager {
             }
 
             if changed {
-                env.set_value("Path", &current_path)
+                // Keep the existing type; set_value would force REG_SZ and break %VAR% entries.
+                let vtype = match env.get_raw_value("Path") {
+                    Ok(v) if matches!(v.vtype, RegType::REG_SZ) => RegType::REG_SZ,
+                    _ => RegType::REG_EXPAND_SZ,
+                };
+                let bytes: Vec<u8> = current_path
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                let value = winreg::RegValue {
+                    bytes: bytes.into(),
+                    vtype,
+                };
+                env.set_raw_value("Path", &value)
                     .map_err(|e| format!("Failed to set PATH: {}", e))?;
 
                 unsafe {
@@ -606,7 +643,7 @@ impl PythonManager {
 
             let current_path = env::var("PATH").unwrap_or_default();
             for path in paths_to_add {
-                if !current_path.contains(&path) {
+                if !path_list_contains(&current_path, &path, false) {
                     let new_path = format!("{}:{}", path, current_path);
                     env::set_var("PATH", new_path);
                 }
@@ -623,7 +660,7 @@ impl PythonManager {
 
             if local_bin.exists() {
                 let current_path = env::var("PATH").unwrap_or_default();
-                if !current_path.contains(local_bin.to_string_lossy().as_ref()) {
+                if !path_list_contains(&current_path, &local_bin.to_string_lossy(), false) {
                     let new_path = format!("{}:{}", local_bin.display(), current_path);
                     env::set_var("PATH", new_path);
                 }
@@ -656,6 +693,11 @@ impl PythonManager {
 
             let system_path: String = sys_env.get_value("Path").unwrap_or_else(|_| "".into());
 
+            // Registry values are raw REG_EXPAND_SZ text; children need real paths. Expand each
+            // part alone so a stray % in one cannot pair with a % in the other.
+            let system_path = expand_env_refs(&system_path);
+            let user_path = expand_env_refs(&user_path);
+
             // Combine system and user paths
             let combined_path = if system_path.trim().is_empty() {
                 user_path
@@ -665,7 +707,6 @@ impl PythonManager {
                 format!("{system_path};{user_path}")
             };
 
-            // Update current process environment
             std::env::set_var("PATH", combined_path);
 
             Ok(())
@@ -712,7 +753,7 @@ impl PythonManager {
 
             if local_bin.exists() {
                 let current_path = env::var("PATH").unwrap_or_default();
-                if !current_path.contains(local_bin.to_string_lossy().as_ref()) {
+                if !path_list_contains(&current_path, &local_bin.to_string_lossy(), false) {
                     let new_path = format!("{}:{}", local_bin.display(), current_path);
                     env::set_var("PATH", new_path);
                 }
@@ -1325,8 +1366,21 @@ impl PythonManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_capped, PythonManager, MAX_CAPTURED_OUTPUT_BYTES};
+    use super::{append_capped, path_list_contains, PythonManager, MAX_CAPTURED_OUTPUT_BYTES};
     use std::time::Duration;
+
+    #[test]
+    fn path_list_contains_matches_whole_entries() {
+        let win = r"C:\Windows;C:\x\ScriptsBackup;C:\Py\Scripts\";
+        assert!(!path_list_contains(win, r"C:\x\Scripts", true));
+        assert!(path_list_contains(win, r"c:\py\scripts", true));
+        assert!(path_list_contains(win, r"C:\WINDOWS\", true));
+
+        let unix = "/usr/bin:/home/u/.local/binx:/opt/bin/";
+        assert!(!path_list_contains(unix, "/home/u/.local/bin", false));
+        assert!(path_list_contains(unix, "/opt/bin", false));
+        assert!(!path_list_contains(unix, "/USR/BIN", false));
+    }
 
     #[test]
     fn resolved_python_command_is_probed_before_fallbacks() {

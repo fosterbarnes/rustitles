@@ -22,6 +22,31 @@ const DEPS_YELLOW: egui::Color32 = egui::Color32::from_rgb(247, 233, 181);
 /// Header subtitle segment ("Subtitle Downloader Tool").
 const TITLE_SUBTITLE: egui::Color32 = egui::Color32::from_rgb(0xAC, 0x98, 0xC7);
 
+/// Single-line field for a value rebuilt from state each frame. While focused, the typed text
+/// lives in temp memory so empty or invalid drafts are not replaced by the stored value.
+fn buffered_text_edit(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    width: f32,
+    text: &mut String,
+) -> egui::Response {
+    let id = ui.make_persistent_id(id_salt);
+    let buffer_id = id.with("buffer");
+    if let Some(buffer) = ui.data_mut(|d| d.get_temp::<String>(buffer_id)) {
+        *text = buffer;
+    }
+    let response = ui.add_sized(
+        [width, ui.spacing().interact_size.y],
+        egui::TextEdit::singleline(text).id(id),
+    );
+    if response.has_focus() {
+        ui.data_mut(|d| d.insert_temp(buffer_id, text.clone()));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(buffer_id));
+    }
+    response
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn render_dependency_command(ui: &mut egui::Ui, label: &str, command: &str) -> bool {
     let mut copied_now = false;
@@ -454,6 +479,7 @@ impl SubtitleDownloader {
                         "sudo pacman -S python-pipx && pipx install subliminal",
                     );
                     render_dependency_command(ui, "Install missing dependencies:", &command);
+                    self.render_version_notice(ui);
                     return;
                 }
             }
@@ -476,6 +502,7 @@ impl SubtitleDownloader {
                         "Install Homebrew, pipx, and Subliminal:"
                     };
                     render_dependency_command(ui, label, &command);
+                    self.render_version_notice(ui);
                     return;
                 }
             }
@@ -509,7 +536,11 @@ impl SubtitleDownloader {
                 render_dependency_command(ui, "Install Subliminal:", "pipx install subliminal");
             }
         }
-        // Version check warning
+        self.render_version_notice(ui);
+    }
+
+    /// Render the Rustitles update notice or version check error.
+    fn render_version_notice(&self, ui: &mut egui::Ui) {
         if self.is_version_checked() {
             if let Some(latest) = self.get_latest_version() {
                 if Self::is_outdated(APP_VERSION, latest) {
@@ -818,10 +849,7 @@ impl SubtitleDownloader {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Minimum match score:").color(egui::Color32::WHITE));
                 let mut score_text = self.minimum_score.to_string();
-                let response = ui.add_sized(
-                    [35.0, ui.spacing().interact_size.y],
-                    egui::TextEdit::singleline(&mut score_text),
-                ).on_hover_text("The lowest match score (0-100) a subtitle needs before it's downloaded.\n\nHigher numbers skip weak matches but may find nothing. 0 accepts any match.");
+                let response = buffered_text_edit(ui, "minimum_score", 35.0, &mut score_text).on_hover_text("The lowest match score (0-100) a subtitle needs before it's downloaded.\n\nHigher numbers skip weak matches but may find nothing. 0 accepts any match.");
                 if response.changed() {
                     if let Ok(score) = score_text.parse::<u8>() {
                         if score <= 100 {
@@ -835,10 +863,7 @@ impl SubtitleDownloader {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Subtitles per video:").color(egui::Color32::WHITE));
                 let mut count_text = self.subtitles_per_video.to_string();
-                let response = ui.add_sized(
-                    [35.0, ui.spacing().interact_size.y],
-                    egui::TextEdit::singleline(&mut count_text),
-                ).on_hover_text("How many subtitles to download for each video.\n\nThe higher a subtitle's number, the more likely it is to be out of sync or incorrect.");
+                let response = buffered_text_edit(ui, "subtitles_per_video", 35.0, &mut count_text).on_hover_text("How many subtitles to download for each video.\n\nThe higher a subtitle's number, the more likely it is to be out of sync or incorrect.");
                 if response.changed() {
                     if let Ok(count) = count_text.trim().parse::<u8>() {
                         if (1..=MAX_SUBTITLES_PER_VIDEO).contains(&count) {
@@ -852,10 +877,7 @@ impl SubtitleDownloader {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Max OpenSubtitles.com pages:").color(egui::Color32::WHITE));
                 let mut pages_text = self.opensubtitles_max_pages.map(|v| v.to_string()).unwrap_or_default();
-                let response = ui.add_sized(
-                    [35.0, ui.spacing().interact_size.y],
-                    egui::TextEdit::singleline(&mut pages_text),
-                ).on_hover_text("How many pages of OpenSubtitles.com results to search for each video.\n\nMore pages can find better matches but take longer. Leave it empty for no limit.");
+                let response = buffered_text_edit(ui, "opensubtitles_max_pages", 35.0, &mut pages_text).on_hover_text("How many pages of OpenSubtitles.com results to search for each video.\n\nMore pages can find better matches but take longer. Leave it empty for no limit.");
                 if response.changed() {
                     let trimmed = pages_text.trim();
                     if trimmed.is_empty() {
@@ -938,10 +960,7 @@ impl SubtitleDownloader {
             ui.label(egui::RichText::new("Concurrent Downloads:").color(egui::Color32::WHITE));
             let concurrent_downloads = self.get_concurrent_downloads_mut();
             let mut concurrent_text = concurrent_downloads.to_string();
-            let text_response = ui.add_sized(
-                [25.0, ui.spacing().interact_size.y],
-                egui::TextEdit::singleline(&mut concurrent_text),
-            ).on_hover_text("How many videos to download subtitles for at the same time.\n\nHigher numbers finish faster but are more likely to hit provider rate limits.");
+            let text_response = buffered_text_edit(ui, "concurrent_downloads", 25.0, &mut concurrent_text).on_hover_text("How many videos to download subtitles for at the same time.\n\nHigher numbers finish faster but are more likely to hit provider rate limits.");
             if text_response.changed() {
                 if let Ok(value) = concurrent_text.parse::<usize>() {
                     if Validation::is_valid_concurrent_downloads(value) {

@@ -64,7 +64,8 @@ function stopOwnedProcessTree {
 }
 
 while ($true) {
-    $cargoArgs = @('run', '--manifest-path', $manifest)
+    # Start-Process joins arguments with spaces unquoted, so quote the path for repos under spaced folders.
+    $cargoArgs = @('run', '--manifest-path', "`"$manifest`"")
     if ($IsWindows -and $architecture) { $cargoArgs += @('--target', (getWindowsCargoTarget $architecture)) }
     if ($forward.Count -gt 0) { $cargoArgs += @('--') + [string[]]$forward }
     $proc = Start-Process -FilePath 'cargo' -ArgumentList $cargoArgs -WorkingDirectory $repoRoot -NoNewWindow -PassThru

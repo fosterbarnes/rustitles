@@ -1,9 +1,12 @@
-v2.4.3 farkFunyun [feat. > subtitles per video setting]
+v2.4.4 mreCoochie [fix > dark title bar and subtitle matching fixes]
+
+windows:
+The title bar is dark as soon as the window opens, instead of only after a minimize. "Show in folder" now opens Explorer on the right file for long and network paths. Adding Python's Scripts folders to PATH no longer breaks existing %VAR% entries or skips a folder whose name is part of another one.
 
 subtitles:
-A new "Subtitles per video" box in Subliminal Matching (1-5, default 1) saves the top matches for each video instead of only the best one (issue #10), so there is a backup when the first file is out of sync. The best match keeps its normal name and the extras are saved next to it as .en.2.srt, .en.3.srt, and so on. The jobs table shows +2 next to the saved file; hover it to see every file with its score and provider. Lowering the number and overwriting removes leftover extras, and the old files are backed up first. "Skip scanned media" scans a video again when the number goes up. Each extra subtitle counts against provider download quotas, which the README now mentions.
+Existing subtitle files next to a video (Name.en.srt) now count as present when more than 1 subtitle per video is set, so they are not downloaded again; with SDH excluded, an .en.sdh.srt does not count as a regular English subtitle. Overwrite backups now include every matching subtitle (.en.srt and .en.sdh.srt), not just the first. Embedded subtitle languages are matched by exact language code, so Estonian (est) no longer counts as Spanish (es). A Subliminal cache error is reported as such instead of "No subtitles found".
 
 settings:
-Settings tooltips are reworded in plain language, and every setting in the top row and the Matching panel now has one.
+Number boxes (minimum score, subtitles per video, max pages, concurrent downloads) can be cleared and retyped without snapping back to the old value. The OpenSubtitles.com credentials in Subliminal's config are found even with extra spaces or a comment on the header, and on macOS and Linux the settings and Subliminal config files are readable only by you. The update notice also shows on the Linux and macOS dependency install screen.
 
-Under the hood: with 1 subtitle per video, downloads use the same Subliminal command as before; with more, a small bundled Python script lists, scores, and downloads the matches, finding the Python inside a pipx install on its own. Provider credentials reach it through an environment variable, never the command line. fmt, clippy, and tests (32 passed) passed on macOS, and the script downloaded distinct subtitles from real providers on Subliminal 2.8.0 and 2.6.0. The pre-push checks passed and multiBuild built all 8 release files (Windows, macOS, Linux). The GUI was not launched, and the Windows and Linux builds were not run.
+Under the hood: Linux pipx install refreshes PATH after installing pipx, and version bumps no longer half-apply when the private word list is missing. The pre-push checks passed on Windows (fmt, clippy, tests: 36 passed) and multiBuild built all 8 release files (Windows x64 and ARM64, macOS, Linux). The GUI was not launched, so the dark title bar and the other fixes were not seen running.

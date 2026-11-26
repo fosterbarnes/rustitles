@@ -4047,7 +4047,7 @@ dependencies = [
 
 [[package]]
 name = "rustitles"
-version = "2.4.3"
+version = "2.4.4"
 dependencies = [
  "chrono",
  "dirs",
@@ -4059,6 +4059,7 @@ dependencies = [
  "jwalk",
  "log",
  "once_cell",
+ "raw-window-handle",
  "reqwest",
  "rfd",
  "serde",

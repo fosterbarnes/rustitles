@@ -45,7 +45,9 @@ if ($dir -eq 'down') {
     }
 }
 $newVersion = "$major.$minor.$patch"
+if ($newVersion -eq $current) { throw "Cannot bump $bump down: version $current is already at 0 for that part." }
+$newTag = getVersionTags 1
 setVersion $newVersion
-$newTag = newVersionTag
+$newTag = setVersionTag $newTag
 Write-Host "Version $current -> $newVersion ($newTag)"
 closeOut 3

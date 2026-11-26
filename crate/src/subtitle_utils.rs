@@ -41,19 +41,21 @@ impl SubtitleUtils {
         let subtitle_files =
             Self::subtitle_files_for_video_in_listing(video_path, folder_subtitles);
 
-        // Try language-specific first
+        // Every match, not one per language: overwrite backups need `.en.srt` and `.en.sdh.srt`.
         for lang in langs {
             let expected_stem = format!("{}.{}", stem, lang);
-            if let Some(path) = subtitle_files
+            for path in subtitle_files
                 .iter()
-                .find(|path| Self::language_specific_stem_matches(path, &expected_stem))
+                .filter(|path| Self::language_specific_stem_matches(path, &expected_stem))
             {
-                crate::debug!("Found language-specific subtitle: {}", path.display());
-                found_subtitles.push(path.clone());
+                if !found_subtitles.contains(path) {
+                    crate::debug!("Found language-specific subtitle: {}", path.display());
+                    found_subtitles.push(path.clone());
+                }
             }
         }
-        // Then try generic
-        if let Some(path) = subtitle_files.iter().find(|path| {
+        // Then generic
+        for path in subtitle_files.iter().filter(|path| {
             path.file_stem()
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.eq_ignore_ascii_case(stem))
@@ -349,6 +351,85 @@ impl SubtitleUtils {
         }
     }
 
+    /// ISO 639-2 tags (B and T forms) for a GUI language code, as ffprobe reports them.
+    fn iso639_2_codes(code: &str) -> &'static [&'static str] {
+        // Regional variants share the base language's tag.
+        match code.split('-').next().unwrap_or(code) {
+            "en" => &["eng"],
+            "fr" => &["fre", "fra"],
+            "es" => &["spa"],
+            "de" => &["ger", "deu"],
+            "it" => &["ita"],
+            "pt" => &["por"],
+            "nl" => &["dut", "nld"],
+            "pl" => &["pol"],
+            "ru" => &["rus"],
+            "sr" => &["srp"],
+            "sv" => &["swe"],
+            "fi" => &["fin"],
+            "da" => &["dan"],
+            "no" => &["nor", "nob", "nno"],
+            "cs" => &["cze", "ces"],
+            "hu" => &["hun"],
+            "ro" => &["rum", "ron"],
+            "bg" => &["bul"],
+            "hr" => &["hrv"],
+            "et" => &["est"],
+            "el" => &["gre", "ell"],
+            "is" => &["ice", "isl"],
+            "lv" => &["lav"],
+            "lt" => &["lit"],
+            "mt" => &["mlt"],
+            "sk" => &["slo", "slk"],
+            "sl" => &["slv"],
+            "tr" => &["tur"],
+            "uk" => &["ukr"],
+            "he" => &["heb"],
+            "ar" => &["ara"],
+            "ja" => &["jpn"],
+            "ko" => &["kor"],
+            "zh" => &["chi", "zho"],
+            "th" => &["tha"],
+            "vi" => &["vie"],
+            "id" => &["ind"],
+            "ms" => &["may", "msa"],
+            "fil" => &["fil", "tgl"],
+            "bn" => &["ben"],
+            "hi" => &["hin"],
+            "ur" => &["urd"],
+            "fa" => &["per", "fas"],
+            "af" => &["afr"],
+            "sw" => &["swa"],
+            "zu" => &["zul"],
+            "xh" => &["xho"],
+            "ku" => &["kur"],
+            "az" => &["aze"],
+            "ka" => &["geo", "kat"],
+            "am" => &["amh"],
+            "ta" => &["tam"],
+            "te" => &["tel"],
+            "kn" => &["kan"],
+            "ml" => &["mal"],
+            "gu" => &["guj"],
+            "pa" => &["pan"],
+            "or" => &["ori"],
+            "mn" => &["mon"],
+            "my" => &["bur", "mya"],
+            "lo" => &["lao"],
+            "km" => &["khm"],
+            _ => &[],
+        }
+    }
+
+    /// Exact match of an ffprobe language tag against a requested GUI language code.
+    fn embedded_language_matches(tag: &str, requested: &str) -> bool {
+        let tag = tag.to_ascii_lowercase();
+        let requested = requested.to_ascii_lowercase();
+        tag == requested
+            || tag == requested.split('-').next().unwrap_or(&requested)
+            || Self::iso639_2_codes(&requested).contains(&tag.as_str())
+    }
+
     /// Return selected languages found in embedded subtitle streams.
     pub fn embedded_subtitle_languages(video_path: &Path, langs: &[String]) -> Vec<String> {
         let mut cmd = Command::new("ffprobe");
@@ -379,19 +460,14 @@ impl SubtitleUtils {
         if let Ok(output) = output {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let requested_languages = langs
-                    .iter()
-                    .map(|code| code.to_ascii_lowercase())
-                    .collect::<Vec<_>>();
                 let mut found = Vec::new();
                 for line in stdout.lines() {
                     // Each line: index,language (e.g., 0,eng)
                     let parts: Vec<&str> = line.split(',').collect();
                     if parts.len() >= 2 {
-                        let lang = parts[1].trim().to_ascii_lowercase();
-                        for (req, requested) in langs.iter().zip(&requested_languages) {
-                            // Accept both 2-letter and 3-letter codes
-                            if lang == *requested || lang.starts_with(requested) {
+                        let lang = parts[1].trim();
+                        for req in langs {
+                            if Self::embedded_language_matches(lang, req) {
                                 if !found.iter().any(|value| value == req) {
                                     found.push(req.clone());
                                 }
@@ -502,6 +578,51 @@ mod tests {
         assert!(!SubtitleUtils::is_hearing_impaired_path(Path::new(
             "The.History.srt"
         )));
+    }
+
+    #[test]
+    fn finds_every_sidecar_per_language_and_generic() {
+        let video = Path::new("/m/Movie.mkv");
+        let listing: Vec<std::path::PathBuf> = [
+            "Movie.en.srt",
+            "Movie.en.sdh.srt",
+            "Movie.fr.srt",
+            "Movie.srt",
+            "Movie.ass",
+        ]
+        .iter()
+        .map(|name| Path::new("/m").join(name))
+        .collect();
+
+        let mut found = SubtitleUtils::find_all_subtitle_files_in_listing(
+            video,
+            &["en".to_string(), "en".to_string()],
+            &listing,
+        );
+        found.sort();
+
+        assert_eq!(
+            found,
+            vec![
+                Path::new("/m/Movie.ass"),
+                Path::new("/m/Movie.en.sdh.srt"),
+                Path::new("/m/Movie.en.srt"),
+                Path::new("/m/Movie.srt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn embedded_language_matches_exact_iso639_codes() {
+        assert!(SubtitleUtils::embedded_language_matches("eng", "en"));
+        assert!(SubtitleUtils::embedded_language_matches("ENG", "en-us"));
+        assert!(SubtitleUtils::embedded_language_matches("en", "en"));
+        assert!(SubtitleUtils::embedded_language_matches("fre", "fr"));
+        assert!(SubtitleUtils::embedded_language_matches("fra", "fr"));
+        assert!(SubtitleUtils::embedded_language_matches("spa", "es"));
+        assert!(SubtitleUtils::embedded_language_matches("est", "et"));
+        assert!(!SubtitleUtils::embedded_language_matches("est", "es"));
+        assert!(!SubtitleUtils::embedded_language_matches("enm", "en"));
     }
 
     #[test]

@@ -1,6 +1,9 @@
 #requires -Version 7.0
-param([Alias('n')][switch]$DryRun)
+# CmdletBinding: an unknown flag must fail, not be ignored and publish a release.
+[CmdletBinding()]
+param([Alias('h')][switch]$Help, [Alias('n')][switch]$DryRun)
 $ErrorActionPreference = 'Stop'
+if ($Help) { Write-Host 'pushRelease.ps1 [-DryRun]'; return }
 . (Join-Path $PSScriptRoot 'scriptHelper.ps1')
 Set-Location -LiteralPath $repoRoot
 assertVersionConsistency

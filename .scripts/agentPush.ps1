@@ -5,11 +5,19 @@
 # -DryRun runs every check and the real prePush.ps1, then push.ps1 -DryRun; nothing is committed.
 # The user picks the version bump: -Context prints an ASK line; -Bump applies the answer, and -NoBump
 # lets a push with code changes keep the current version.
+# CmdletBinding: an unknown flag must fail, not fall into $args and run the default push.
+[CmdletBinding()]
 param(
+    [Alias('h')][switch]$Help,
     [switch]$Context, [switch]$Tags, [string]$SetTag,
     [ValidateSet('major', 'minor', 'patch')][string]$Bump, [switch]$NoBump, [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
+if ($Help) {
+    Write-Host 'agentPush.ps1 [-Context | -Tags | -SetTag <tag> | -Bump major|minor|patch] [-NoBump] [-DryRun]'
+    Write-Host 'No mode flag: validate buildNotes.txt, run prePush.ps1 and push.ps1, then report.'
+    return
+}
 . (Join-Path $PSScriptRoot 'scriptHelper.ps1')
 Set-Location -LiteralPath $repoRoot
 $current = requireVersion
